@@ -1,0 +1,41 @@
+import type { FC } from 'react';
+import { useTranslation } from 'react-i18next';
+import { DescriptionList, Label, Title } from '@patternfly/react-core';
+import type { AIBOMData } from '../../types/aibom';
+import Field from './Field';
+
+interface AIBOMDatasetSectionProps {
+  dataset: AIBOMData['dataset'];
+}
+
+const AIBOMDatasetSection: FC<AIBOMDatasetSectionProps> = ({ dataset }) => {
+  const { t } = useTranslation('plugin__aibom-console-plugin');
+  if (!dataset) return null;
+  const declared = dataset.declared;
+  const autoDetected = dataset.auto_detected ?? [];
+
+  return (
+    <>
+      <Title headingLevel="h2">{t('Dataset')}</Title>
+      <DescriptionList>
+        <Field label={t('Declared')}>
+          {declared?.name &&
+            `${declared.name} ${declared.version ?? ''} (license: ${declared.license ?? '—'}, via: ${
+              declared.declared_via ?? '—'
+            })`}
+        </Field>
+        {autoDetected.map((d, index) => (
+          <Field key={index} label={t('Auto-detected')}>
+            {d.dataset_name} {d.version ?? ''} (license: {d.license ?? '—'}, seen via:{' '}
+            {(d.seen_via ?? []).join(', ')}){' '}
+            <Label color={d.matches_declared ? 'green' : 'red'}>
+              {d.matches_declared ? t('matches declared') : t('DOES NOT MATCH DECLARED')}
+            </Label>
+          </Field>
+        ))}
+      </DescriptionList>
+    </>
+  );
+};
+
+export default AIBOMDatasetSection;
