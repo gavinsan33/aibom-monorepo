@@ -46,11 +46,30 @@ const AIBOMComparePage: FC = () => {
     [itemKeys],
   );
 
-  const results = useK8sWatchResources<Record<string, AIBOMResource>>(watchResources);
+  // A single-resource watch (isList: false) initializes `data` to `null`
+  // until it loads -- unlike a list watch's `[]` default -- so every access
+  // below must tolerate `null`, not just the AIBOMResource the SDK's own
+  // generic claims once loaded.
+  const results = useK8sWatchResources<Record<string, AIBOMResource>>(
+    watchResources,
+  ) as unknown as Record<
+    string,
+    { data: AIBOMResource | null; loaded: boolean; loadError: unknown }
+  >;
   const loaded = itemKeys.every(({ key }) => results[key].loaded);
-  const loadError = itemKeys.find(({ key }) => results[key].loadError)?.key;
-  const items = itemKeys.map(({ key }) => results[key].data);
-  const runNames = itemKeys.map(({ key, name }) => getJobName(results[key].data) || name);
+  const loadErrorKey = itemKeys.find(({ key }) => results[key].loadError)?.key;
+  const missingKey =
+    loaded && !loadErrorKey
+      ? itemKeys.find(({ key }) => results[key].data == null)?.key
+      : undefined;
+  const items = itemKeys
+    .map(({ key }) => results[key].data)
+    .filter((data): data is AIBOMResource => data != null);
+  const runNames = itemKeys.map(({ key, name }) => {
+    const data = results[key].data;
+    const jobName = data === null ? '' : getJobName(data);
+    return jobName || name;
+  });
 
   return (
     <>
@@ -59,11 +78,15 @@ const AIBOMComparePage: FC = () => {
       <PageSection>
         {itemKeys.length < 2 ? (
           <Alert variant="warning" title={t('Select at least 2 AIBOMs to compare')} />
-        ) : loadError ? (
+        ) : loadErrorKey ? (
           <Alert variant="danger" title={t('Error loading AIBOMs')}>
-            {results[loadError].loadError instanceof Error
-              ? results[loadError].loadError.message
+            {results[loadErrorKey].loadError instanceof Error
+              ? results[loadErrorKey].loadError.message
               : t('Unknown error')}
+          </Alert>
+        ) : missingKey ? (
+          <Alert variant="danger" title={t('AIBOM not found')}>
+            {missingKey}
           </Alert>
         ) : !loaded ? (
           <Bullseye>
