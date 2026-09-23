@@ -1,0 +1,231 @@
+# A fake vLLM serving AIBOM -- exercises the Detail view's Inference
+# section/Inference Performance table and the Telemetry tab's vLLM chart
+# gating (inference.serving_engine === 'vllm').
+apiVersion: aibom.io/v1alpha1
+kind: AIBOM
+metadata:
+  name: aibom-vllm-granite-inference
+  namespace: project-gavin-test
+  labels:
+    aibom.io/instrumented: "true"
+spec:
+  jobName: vllm-granite-serving
+  modelName: ibm-granite/granite-3.3-8b-instruct-AWQ-INT4
+  experimentIntent: inference
+  collectedAt: "2026-09-21T18:00:00Z"
+  data:
+    experiment_intent: inference
+    experiment_intent_declared_via: inferred_from_model_detection
+    experiment_name: vllm-granite-serving
+    experiment_description: vLLM serving of an AWQ-quantized granite-3.3-8b
+    source_code:
+      git_repository: example-org/serving-manifests
+      git_commit: abcdef0123456789abcdef0123456789abcdef01
+      git_branch: main
+      declared_via: oci_image_label
+      dirty: false
+    execution_metadata:
+      job_id: vllm-granite-serving
+      namespace: project-gavin-test
+      duration_seconds: 86400
+      status: Completed
+      pods:
+        - pod_name: vllm-granite-serving-predictor-0
+          pod_uid: 8a1b2c3d-0004-4a1b-9c1d-000000000004
+          pod_namespace: project-gavin-test
+          pod_ip: 10.128.5.10
+          node_name: gpu-node-04
+          start_time: "2026-09-20T18:00:00Z"
+          status: Completed
+          exit_code: 0
+    model:
+      name: ibm-granite/granite-3.3-8b-instruct-AWQ-INT4
+      version: "3.3"
+      architecture: granite
+      framework: vllm
+      quantization: awq
+      quantization_bits: 4
+      dtype: float16
+    dataset:
+      declared: {}
+      auto_detected: []
+    inference:
+      serving_engine: vllm
+      max_model_len: 8192
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      enable_expert_parallel: false
+      data_parallel_size: 1
+      gpu_memory_utilization: 0.9
+      temperature: 0.7
+      top_p: 0.95
+      top_k: 50
+      max_tokens: 1024
+      performance:
+        collected_at: "2026-09-21T18:00:00Z"
+        summary_includes_cold_start: false
+        metrics:
+          time_to_first_token_seconds:
+            unit: s
+            min: 0.08
+            max: 0.62
+            avg: 0.21
+            p95: 0.48
+            segments:
+              first_third: 0.30
+              middle_third: 0.18
+              last_third: 0.16
+          inter_token_latency_seconds:
+            unit: s
+            min: 0.01
+            max: 0.09
+            avg: 0.03
+            p95: 0.06
+            segments:
+              first_third: 0.04
+              middle_third: 0.03
+              last_third: 0.025
+          num_requests_running:
+            unit: requests
+            min: 0
+            max: 12
+            avg: 4.2
+            p95: 10.0
+            segments:
+              first_third: 2.0
+              middle_third: 5.0
+              last_third: 5.5
+          num_requests_waiting:
+            unit: requests
+            min: 0
+            max: 8
+            avg: 1.1
+            p95: 5.0
+            segments:
+              first_third: 0.5
+              middle_third: 1.5
+              last_third: 1.3
+          kv_cache_usage:
+            unit: "%"
+            min: 5.0
+            max: 78.0
+            avg: 42.0
+            p95: 70.0
+            segments:
+              first_third: 20.0
+              middle_third: 50.0
+              last_third: 55.0
+          prompt_throughput:
+            unit: tokens/s
+            min: 100.0
+            max: 2400.0
+            avg: 1200.0
+            p95: 2100.0
+            segments:
+              first_third: 900.0
+              middle_third: 1300.0
+              last_third: 1400.0
+          generation_throughput:
+            unit: tokens/s
+            min: 50.0
+            max: 900.0
+            avg: 420.0
+            p95: 800.0
+            segments:
+              first_third: 350.0
+              middle_third: 450.0
+              last_third: 470.0
+    environment:
+      gpu_type: NVIDIA H100 80GB HBM3
+      gpu_count: 1
+      cpu_model: AMD EPYC 7763
+      cpu_cores: 16
+      memory_gb: 128
+      numa_nodes: 1
+      cuda_version: "12.5"
+      driver_version: "555.42.02"
+      framework_version: "0.6.2"
+      kernel_version: 5.14.0-427.el9.x86_64
+    resource_utilization:
+      collected_at: "2026-09-21T18:00:00Z"
+      summary_includes_cold_start: false
+      metrics:
+        gpu_utilization:
+          unit: "%"
+          min: 20.0
+          max: 95.0
+          avg: 68.0
+          p95: 90.0
+          segments:
+            first_third: 60.0
+            middle_third: 70.0
+            last_third: 74.0
+        gpu_memory_used:
+          unit: MiB
+          min: 60000
+          max: 76000
+          avg: 72000
+          p95: 75500
+          limit: 81920
+          segments:
+            first_third: 68000
+            middle_third: 73000
+            last_third: 74500
+        gpu_power:
+          unit: W
+          min: 150
+          max: 320
+          avg: 240
+          p95: 300
+          segments:
+            first_third: 220
+            middle_third: 245
+            last_third: 250
+        cpu_usage:
+          unit: cores
+          min: 1.0
+          max: 8.0
+          avg: 3.5
+          p95: 7.0
+          limit: 16
+          segments:
+            first_third: 3.0
+            middle_third: 3.5
+            last_third: 4.0
+        memory_usage:
+          unit: GB
+          min: 20.0
+          max: 40.0
+          avg: 30.0
+          p95: 38.0
+          limit: 128
+          segments:
+            first_third: 28.0
+            middle_third: 30.0
+            last_third: 31.0
+        network_receive:
+          unit: Mbps
+          min: 1.0
+          max: 60.0
+          avg: 15.0
+          p95: 45.0
+          segments:
+            first_third: 12.0
+            middle_third: 16.0
+            last_third: 17.0
+        network_transmit:
+          unit: Mbps
+          min: 1.0
+          max: 55.0
+          avg: 14.0
+          p95: 42.0
+          segments:
+            first_third: 11.0
+            middle_third: 15.0
+            last_third: 16.0
+    _metadata:
+      aibom_version: v1alpha1
+      generated_at: "2026-09-21T18:00:00Z"
+      generator: postprocess.py/0.9.0
+      schema_compliance: full
+      dataset_detection: runtime_detector.py
