@@ -1,6 +1,10 @@
+import type { ReactElement } from 'react';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import type { AIBOMResource } from '../types/aibom';
 import AIBOMListTable from './AIBOMListTable';
+
+const renderWithRouter = (ui: ReactElement) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 function item(name: string): AIBOMResource {
   return {
@@ -20,7 +24,7 @@ function item(name: string): AIBOMResource {
 
 describe('AIBOMListTable', () => {
   it('renders the base columns, not a metric column, when sorting by age', () => {
-    render(
+    renderWithRouter(
       <AIBOMListTable items={[item('run-a')]} sortKey="age" ascending={false} onSort={jest.fn()} />,
     );
     expect(screen.getByText('Job')).toBeInTheDocument();
@@ -29,7 +33,7 @@ describe('AIBOMListTable', () => {
   });
 
   it('adds a metric column when sorting by a performance metric', () => {
-    render(
+    renderWithRouter(
       <AIBOMListTable
         items={[item('run-a')]}
         sortKey="gpu-utilization"

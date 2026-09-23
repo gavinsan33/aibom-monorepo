@@ -1,5 +1,6 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router';
 import { SortByDirection, Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import type { AIBOMResource, SortKey } from '../types/aibom';
 import {
@@ -60,7 +61,15 @@ const AIBOMListTable: FC<AIBOMListTableProps> = ({ items, sortKey, ascending, on
       <Tbody>
         {items.map((item) => (
           <Tr key={`${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`}>
-            <Td dataLabel={t('Job')}>{getJobName(item) || '—'}</Td>
+            <Td dataLabel={t('Job')}>
+              {item.metadata?.namespace && item.metadata.name ? (
+                <Link to={`/aiboms/${item.metadata.namespace}/${item.metadata.name}`}>
+                  {getJobName(item) || item.metadata.name}
+                </Link>
+              ) : (
+                getJobName(item) || '—'
+              )}
+            </Td>
             <Td dataLabel={t('Model')}>{getModelName(item) || '—'}</Td>
             <Td dataLabel={t('Experiment intent')}>{getExperimentIntent(item) || '—'}</Td>
             <Td dataLabel={t('Quantization')}>{getQuantization(item) || '—'}</Td>
