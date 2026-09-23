@@ -1,9 +1,10 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { DescriptionList, Title } from '@patternfly/react-core';
+import { DescriptionList } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { formatFlexNumber, toFlexNumber } from '../../utils/flexible';
 import Field from './Field';
+import Section from './Section';
 
 interface AIBOMEnvironmentSectionProps {
   environment: AIBOMData['environment'];
@@ -15,9 +16,8 @@ const AIBOMEnvironmentSection: FC<AIBOMEnvironmentSectionProps> = ({ environment
   const memoryGb = toFlexNumber(environment.memory_gb);
 
   return (
-    <>
-      <Title headingLevel="h2">{t('Environment')}</Title>
-      <DescriptionList>
+    <Section title={t('Environment')} md={6}>
+      <DescriptionList isHorizontal isCompact columnModifier={{ default: '1Col', md: '2Col' }}>
         <Field label={t('GPU')}>
           {environment.gpu_type &&
             `${environment.gpu_type} x${formatFlexNumber(environment.gpu_count)}`}
@@ -35,7 +35,7 @@ const AIBOMEnvironmentSection: FC<AIBOMEnvironmentSectionProps> = ({ environment
         <Field label={t('Framework version')}>{environment.framework_version}</Field>
         <Field label={t('Kernel version')}>{environment.kernel_version}</Field>
       </DescriptionList>
-    </>
+    </Section>
   );
 };
 

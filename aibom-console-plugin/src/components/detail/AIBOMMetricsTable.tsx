@@ -8,6 +8,8 @@ import { sparkline } from '../../utils/metricSegments';
 
 interface AIBOMMetricsTableProps {
   title: string;
+  /** Set false when an ancestor (e.g. a `Section`'s `CardTitle`) already renders `title` visibly -- `title` is still used as the table's `aria-label` either way. */
+  showTitle?: boolean;
   metrics: Record<string, MetricStats> | undefined;
   order: readonly string[];
   labels: Record<string, string>;
@@ -34,6 +36,7 @@ const maxCellColor = (
 
 const AIBOMMetricsTable: FC<AIBOMMetricsTableProps> = ({
   title,
+  showTitle = true,
   metrics,
   order,
   labels,
@@ -46,7 +49,7 @@ const AIBOMMetricsTable: FC<AIBOMMetricsTableProps> = ({
   if (note) {
     return (
       <>
-        <Title headingLevel="h3">{title}</Title>
+        {showTitle && <Title headingLevel="h3">{title}</Title>}
         <Content component="p">{note}</Content>
       </>
     );
@@ -57,7 +60,7 @@ const AIBOMMetricsTable: FC<AIBOMMetricsTableProps> = ({
 
   return (
     <>
-      <Title headingLevel="h3">{title}</Title>
+      {showTitle && <Title headingLevel="h3">{title}</Title>}
       <Table aria-label={title} variant="compact">
         <Thead>
           <Tr>

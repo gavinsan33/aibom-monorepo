@@ -1,9 +1,10 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { DescriptionList, Title } from '@patternfly/react-core';
+import { DescriptionList } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { formatFlexNumber, toFlexNumber } from '../../utils/flexible';
 import Field from './Field';
+import Section from './Section';
 
 interface AIBOMModelSectionProps {
   model: AIBOMData['model'];
@@ -16,9 +17,8 @@ const AIBOMModelSection: FC<AIBOMModelSectionProps> = ({ model }) => {
   const spec = model.speculative_decoding;
 
   return (
-    <>
-      <Title headingLevel="h2">{t('Model')}</Title>
-      <DescriptionList>
+    <Section title={t('Model')} md={6}>
+      <DescriptionList isHorizontal isCompact columnModifier={{ default: '1Col', md: '2Col' }}>
         <Field label={t('Name')}>{model.name}</Field>
         <Field label={t('Version')}>{model.version}</Field>
         <Field label={t('Architecture')}>{model.architecture}</Field>
@@ -36,7 +36,7 @@ const AIBOMModelSection: FC<AIBOMModelSectionProps> = ({ model }) => {
           </Field>
         )}
       </DescriptionList>
-    </>
+    </Section>
   );
 };
 

@@ -1,9 +1,10 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Label, Title } from '@patternfly/react-core';
+import { Label } from '@patternfly/react-core';
 import { Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import type { AIBOMPod } from '../../types/aibom';
 import { podStatusColor } from '../../utils/podStatus';
+import Section from './Section';
 
 interface AIBOMPodsSectionProps {
   pods: AIBOMPod[] | undefined;
@@ -14,8 +15,7 @@ const AIBOMPodsSection: FC<AIBOMPodsSectionProps> = ({ pods }) => {
   if (!pods || pods.length === 0) return null;
 
   return (
-    <>
-      <Title headingLevel="h2">{t('Pods')}</Title>
+    <Section title={t('Pods')}>
       <Table aria-label={t('Pods')} variant="compact">
         <Thead>
           <Tr>
@@ -40,7 +40,7 @@ const AIBOMPodsSection: FC<AIBOMPodsSectionProps> = ({ pods }) => {
           ))}
         </Tbody>
       </Table>
-    </>
+    </Section>
   );
 };
 
