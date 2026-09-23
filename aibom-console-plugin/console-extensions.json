@@ -16,6 +16,14 @@
     }
   },
   {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/aiboms/compare",
+      "component": { "$codeRef": "AIBOMComparePage" }
+    }
+  },
+  {
     "type": "console.navigation/href",
     "properties": {
       "id": "aiboms",

@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router';
 import type { AIBOMResource } from '../types/aibom';
 import AIBOMListTable from './AIBOMListTable';
@@ -25,7 +25,14 @@ function item(name: string): AIBOMResource {
 describe('AIBOMListTable', () => {
   it('renders the base columns, not a metric column, when sorting by age', () => {
     renderWithRouter(
-      <AIBOMListTable items={[item('run-a')]} sortKey="age" ascending={false} onSort={jest.fn()} />,
+      <AIBOMListTable
+        items={[item('run-a')]}
+        sortKey="age"
+        ascending={false}
+        onSort={jest.fn()}
+        selected={new Set()}
+        onToggleSelect={jest.fn()}
+      />,
     );
     expect(screen.getByText('Job')).toBeInTheDocument();
     expect(screen.getByText('granite-3.0-8b')).toBeInTheDocument();
@@ -39,9 +46,27 @@ describe('AIBOMListTable', () => {
         sortKey="gpu-utilization"
         ascending={false}
         onSort={jest.fn()}
+        selected={new Set()}
+        onToggleSelect={jest.fn()}
       />,
     );
     expect(screen.getByText('gpu-utilization')).toBeInTheDocument();
     expect(screen.getByText('42.00 %')).toBeInTheDocument();
+  });
+
+  it('calls onToggleSelect with the item key when its checkbox is clicked', () => {
+    const onToggleSelect = jest.fn();
+    renderWithRouter(
+      <AIBOMListTable
+        items={[item('run-a')]}
+        sortKey="age"
+        ascending={false}
+        onSort={jest.fn()}
+        selected={new Set()}
+        onToggleSelect={onToggleSelect}
+      />,
+    );
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(onToggleSelect).toHaveBeenCalledWith('ns/run-a');
   });
 });
