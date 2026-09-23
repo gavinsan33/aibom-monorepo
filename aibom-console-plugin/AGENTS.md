@@ -62,6 +62,33 @@ inference charts gate on `inference.serving_engine === 'vllm'` -- matches
 the existing tables' own gating logic, so don't add hardware charts for a
 non-GPU workload just because pods exist.
 
+**RBAC (verified, not guessed)**: `QueryBrowser` is always given a
+`namespace` prop, which makes console's own `getPrometheusURL` route
+through the *tenancy-scoped* Prometheus proxy (`/api/prometheus-tenancy` ->
+`thanos-querier.openshift-monitoring.svc:9092`) instead of the cluster-wide
+admin one (`/api/prometheus` -> `:9091`, needs `cluster-monitoring-view`).
+The tenancy port's `kube-rbac-proxy` sidecar (per
+`cluster-monitoring-operator`'s own `thanos-querier.libsonnet`) authorizes
+by checking `get` on `pods.metrics.k8s.io` in the query's `namespace` param
+-- confirmed present in the standard `view` ClusterRole via `oc get
+clusterrole view -o yaml` and a live `oc auth can-i get pods.metrics.k8s.io
+-n <ns>` check. **Don't add a `cluster-monitoring-view` RBAC requirement or
+grant anywhere in this repo or `aibom-webhook-service`'s charts for viewer
+access** -- it's already covered by `aibom-view`'s `view` aggregation. If
+you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
+switch back to the admin-only endpoint and reintroduce this requirement.
+
+**Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
+mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
+*both* the admin and tenancy proxy configs at the same single public Thanos
+URL -- there is no way to reach the real tenancy-enforcing `:9092` service
+from outside the cluster (it's ClusterIP-only by design). So the Telemetry
+tab will *always* 403/404 in local dev regardless of this design being
+correct, and will require `cluster-monitoring-view` locally no matter what.
+Don't "fix" this by loosening the real RBAC design to work around a
+local-only limitation -- verify the Telemetry tab only via an actual
+in-cluster deployment (Helm chart, registered on the real `Console` CR).
+
 Segmented-chart visualizations beyond what the existing metrics tables and
 the Telemetry tab already cover are deliberately out of scope until later
 work (see

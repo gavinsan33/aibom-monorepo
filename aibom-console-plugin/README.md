@@ -42,24 +42,27 @@ charts — not just the CR's stored min/max/avg/p95 — via the console SDK's
 same PromQL `aibom-webhook-service`'s `postprocess.py` uses, scoped to the
 AIBOM's own pod(s) and run window. Hardware charts (GPU/CPU/memory/network/
 storage) show when the workload requested a GPU; inference charts (TTFT,
-ITL, queue depth, KV-cache, throughput) show for vLLM workloads. Requires
-the viewing user to have their own cluster-monitoring view access (see
-Prerequisites) — this is separate from the postprocess Job's own monitoring
-RBAC, which only covers that Job's identity, not arbitrary console users.
+ITL, queue depth, KV-cache, throughput) show for vLLM workloads. Because
+`QueryBrowser` is given a `namespace`, the console routes these queries
+through its **tenancy-scoped** Prometheus proxy (`/api/prometheus-tenancy`,
+`thanos-querier.openshift-monitoring.svc:9092`) rather than the
+cluster-wide admin one — that endpoint's own authorization only requires
+`get` on `pods.metrics.k8s.io` in the AIBOM's namespace, which the standard
+`view` ClusterRole already includes. **No extra RBAC beyond `aibom-view`'s
+existing `view` aggregation is needed** for a real in-cluster deployment.
+(This *cannot* be verified via `yarn start-console`'s local dev loop — its
+off-cluster bridge mode collapses the admin and tenancy proxies to the same
+single URL, which can't reach the real tenancy-enforcing port; local
+testing of the Telemetry tab will always demand `cluster-monitoring-view`
+regardless of this design. Verify only against a real deployment via the
+Helm chart below.)
 
 ## Prerequisites
 
 - `aibom-webhook-service`'s CRD (`aiboms.aibom.io`) and its `aibom-view`
   aggregated `ClusterRole` installed on the cluster. A user with `view` on a
-  namespace can already browse AIBOMs there through this plugin with no
-  extra RBAC grant — this repo does not create or duplicate that role.
-- For the Detail view's **Telemetry** tab: the viewing user needs their own
-  `cluster-monitoring-view` (or equivalent) access to the cluster's
-  Prometheus. Charts query through the console's own Prometheus proxy as
-  the logged-in user — the `cluster-monitoring-view` RoleBinding
-  `aibom-webhook-service`'s charts already grant is bound to the
-  postprocess Job's ServiceAccount, not to your users, so it doesn't cover
-  this.
+  namespace can already browse AIBOMs there through this plugin — including
+  the Telemetry tab's live charts — with no extra RBAC grant.
 - Node.js and [yarn](https://yarnpkg.com) to build the plugin.
 - `oc`/`kubectl` and an OpenShift cluster (4.12+, `ConsolePlugin` CRD v1) to
   run or deploy it.
