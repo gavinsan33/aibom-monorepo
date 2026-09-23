@@ -42,8 +42,29 @@ you're tempted to add a `Trend()`-word-based badge (`"up"`/`"down"`/`"flat"`/
 actually rendered by any CLI command, so there's no reference format to
 mirror and you'd be inventing presentation, not porting it.
 
-Segmented-chart visualizations (beyond the existing metrics tables) and live
-Prometheus telemetry are deliberately out of scope until later work (see
+**Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
+`AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
+charts, one per metric, via the console SDK's `QueryBrowser` component --
+**not** a custom chart renderer or a new charting library dependency.
+`src/utils/promql.ts` builds the PromQL, mirroring
+`aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
+`VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
+windows, the `exported_pod` vs. `pod` label distinction for GPU vs.
+everything else) so live charts read the same series the AIBOM's own
+recorded stats came from. If those queries ever change upstream, update
+`promql.ts` and its tests to match -- a drifted label silently produces an
+empty/wrong chart with no error. Time window is `earliestPodStart(pods)` to
+`spec.collectedAt`, cold start included (unlike the summary stats' trimmed
+window) since showing that shape is the tab's whole point. Multi-pod
+(JobSet) support is a `pod=~"a|b|c"` regex alternation across all pod names,
+not a query per pod. Hardware charts gate on `environment.gpu_count > 0`;
+inference charts gate on `inference.serving_engine === 'vllm'` -- matches
+the existing tables' own gating logic, so don't add hardware charts for a
+non-GPU workload just because pods exist.
+
+Segmented-chart visualizations beyond what the existing metrics tables and
+the Telemetry tab already cover are deliberately out of scope until later
+work (see
 [aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94)).
 Don't add them speculatively.
 

@@ -36,8 +36,16 @@ trend sparkline per item, plus Delta/% Change columns when comparing exactly
 2. Unifies `oc-aibom`'s two separate `diff`/`compare` commands into one
 N-scalable view rather than replicating both CLI shapes.
 
-Live Prometheus telemetry is tracked as follow-up work — see
-[aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94).
+The Detail view's **Telemetry** tab shows live, full-resolution time-series
+charts — not just the CR's stored min/max/avg/p95 — via the console SDK's
+`QueryBrowser`, querying the cluster's Prometheus directly with the exact
+same PromQL `aibom-webhook-service`'s `postprocess.py` uses, scoped to the
+AIBOM's own pod(s) and run window. Hardware charts (GPU/CPU/memory/network/
+storage) show when the workload requested a GPU; inference charts (TTFT,
+ITL, queue depth, KV-cache, throughput) show for vLLM workloads. Requires
+the viewing user to have their own cluster-monitoring view access (see
+Prerequisites) — this is separate from the postprocess Job's own monitoring
+RBAC, which only covers that Job's identity, not arbitrary console users.
 
 ## Prerequisites
 
@@ -45,6 +53,13 @@ Live Prometheus telemetry is tracked as follow-up work — see
   aggregated `ClusterRole` installed on the cluster. A user with `view` on a
   namespace can already browse AIBOMs there through this plugin with no
   extra RBAC grant — this repo does not create or duplicate that role.
+- For the Detail view's **Telemetry** tab: the viewing user needs their own
+  `cluster-monitoring-view` (or equivalent) access to the cluster's
+  Prometheus. Charts query through the console's own Prometheus proxy as
+  the logged-in user — the `cluster-monitoring-view` RoleBinding
+  `aibom-webhook-service`'s charts already grant is bound to the
+  postprocess Job's ServiceAccount, not to your users, so it doesn't cover
+  this.
 - Node.js and [yarn](https://yarnpkg.com) to build the plugin.
 - `oc`/`kubectl` and an OpenShift cluster (4.12+, `ConsolePlugin` CRD v1) to
   run or deploy it.
