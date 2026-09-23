@@ -28,9 +28,22 @@ section order and field mapping (see that project's `cmd/kubectl-aibom/main.go`
 canonicalization lib + a cluster ConfigMap lookup) is a deliberate future
 step, not an oversight — don't half-implement it.
 
-Compare view, segmented-chart visualizations (beyond the existing metrics
-tables), and live Prometheus telemetry are deliberately out of scope until
-later work (see
+**Compare view** (`src/components/AIBOMComparePage.tsx` + `src/components/compare/`):
+select 2+ AIBOMs on the List view (checkbox column + action bar), compared
+at `/aiboms/compare?items=<urlencoded ns/name pairs>`. Deliberately unifies
+`oc-aibom`'s two separate `diff` (exactly 2, full field list, only differing
+fields, delta/%-change) and `compare` (2+, fixed 4-field summary, averages
+only, no delta) commands into one N-scalable view: `src/utils/compareFields.ts`
+always shows the fuller `diff` field list for all N items (flagging
+divergent rows rather than hiding agreement), `src/utils/comparePerformance.ts`
+shows a sparkline per item always and Delta/%-change only at exactly 2. If
+you're tempted to add a `Trend()`-word-based badge (`"up"`/`"down"`/`"flat"`/
+`"volatile"`) — don't; it's defined in `oc-aibom`'s Go types but never
+actually rendered by any CLI command, so there's no reference format to
+mirror and you'd be inventing presentation, not porting it.
+
+Segmented-chart visualizations (beyond the existing metrics tables) and live
+Prometheus telemetry are deliberately out of scope until later work (see
 [aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94)).
 Don't add them speculatively.
 

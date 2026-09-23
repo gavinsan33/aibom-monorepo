@@ -77,7 +77,8 @@
     "description": "Browse and filter AIBOM (AI Bill of Materials) custom resources produced by aibom-webhook-service.",
     "exposedModules": {
       "AIBOMListPage": "./components/AIBOMListPage",
-      "AIBOMDetailPage": "./components/AIBOMDetailPage"
+      "AIBOMDetailPage": "./components/AIBOMDetailPage",
+      "AIBOMComparePage": "./components/AIBOMComparePage"
     },
     "dependencies": {
       "@console/pluginAPI": ">=5.0.0-0 || >=4.23.0-0"

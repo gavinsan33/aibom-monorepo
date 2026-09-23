@@ -1,6 +1,7 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
+import { Checkbox } from '@patternfly/react-core';
 import { SortByDirection, Table, Thead, Tbody, Tr, Th, Td } from '@patternfly/react-table';
 import type { AIBOMResource, SortKey } from '../types/aibom';
 import {
@@ -20,9 +21,21 @@ interface AIBOMListTableProps {
   sortKey: SortKey;
   ascending: boolean;
   onSort: (sortKey: SortKey, ascending: boolean) => void;
+  selected: Set<string>;
+  onToggleSelect: (key: string) => void;
 }
 
-const AIBOMListTable: FC<AIBOMListTableProps> = ({ items, sortKey, ascending, onSort }) => {
+const itemKey = (item: AIBOMResource): string =>
+  `${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`;
+
+const AIBOMListTable: FC<AIBOMListTableProps> = ({
+  items,
+  sortKey,
+  ascending,
+  onSort,
+  selected,
+  onToggleSelect,
+}) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const metricKey = sortKey === 'age' ? undefined : SORTABLE_METRICS[sortKey];
 
@@ -49,6 +62,7 @@ const AIBOMListTable: FC<AIBOMListTableProps> = ({ items, sortKey, ascending, on
     <Table aria-label={t('AIBOMs')} variant="compact">
       <Thead>
         <Tr>
+          <Th screenReaderText={t('Selected')} />
           <Th>{t('Job')}</Th>
           <Th>{t('Model')}</Th>
           <Th>{t('Experiment intent')}</Th>
@@ -60,7 +74,17 @@ const AIBOMListTable: FC<AIBOMListTableProps> = ({ items, sortKey, ascending, on
       </Thead>
       <Tbody>
         {items.map((item) => (
-          <Tr key={`${item.metadata?.namespace ?? ''}/${item.metadata?.name ?? ''}`}>
+          <Tr key={itemKey(item)}>
+            <Td dataLabel={t('Selected')}>
+              <Checkbox
+                id={`aibom-select-${itemKey(item)}`}
+                aria-label={t('Select for comparison')}
+                isChecked={selected.has(itemKey(item))}
+                onChange={() => {
+                  onToggleSelect(itemKey(item));
+                }}
+              />
+            </Td>
             <Td dataLabel={t('Job')}>
               {item.metadata?.namespace && item.metadata.name ? (
                 <Link to={`/aiboms/${item.metadata.namespace}/${item.metadata.name}`}>

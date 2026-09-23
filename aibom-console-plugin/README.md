@@ -19,17 +19,24 @@ here.
 
 ## Status
 
-**List + Detail views.** Filter/sort AIBOMs across a namespace or all
-projects (mirroring `oc-aibom list`), and click into a single AIBOM for its
-full field breakdown — model, dataset drift, source provenance,
+**List, Detail, and Compare views.** Filter/sort AIBOMs across a namespace or
+all projects (mirroring `oc-aibom list`), and click into a single AIBOM for
+its full field breakdown — model, dataset drift, source provenance,
 training/fine-tuning/inference config, environment, per-pod status, and
 segmented hardware/inference performance tables (mirroring `oc-aibom
 describe`). The Detail view's `Signature:` row reports presence only
 (`signed — not verified in this view` / `not signed`) — it does not perform
 `oc-aibom`'s Ed25519 + RFC 8785 verification.
 
-Compare view (multi-AIBOM diff) and live Prometheus telemetry are tracked as
-follow-up work — see
+Select 2+ AIBOMs from the List view (checkbox column) and click **Compare**
+to see them side by side: every field `oc-aibom diff` tracks (model,
+dataset, source, environment, metadata) shown for all selected items with
+divergent rows flagged, and a hardware-performance table with a value +
+trend sparkline per item, plus Delta/% Change columns when comparing exactly
+2. Unifies `oc-aibom`'s two separate `diff`/`compare` commands into one
+N-scalable view rather than replicating both CLI shapes.
+
+Live Prometheus telemetry is tracked as follow-up work — see
 [aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94).
 
 ## Prerequisites
