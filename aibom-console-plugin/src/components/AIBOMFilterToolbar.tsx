@@ -3,15 +3,17 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Checkbox,
+  Content,
   FormSelect,
   FormSelectOption,
   Toolbar,
   ToolbarContent,
+  ToolbarGroup,
   ToolbarItem,
 } from '@patternfly/react-core';
 import type { AIBOMFilter } from '../utils/filter';
 import type { AIBOMResource, SortKey } from '../types/aibom';
-import { SORTABLE_METRICS } from '../types/aibom';
+import { HARDWARE_METRIC_LABELS, SORTABLE_METRICS } from '../types/aibom';
 import {
   getAdaptationMethod,
   getArchitecture,
@@ -89,56 +91,70 @@ const AIBOMFilterToolbar: FC<AIBOMFilterToolbarProps> = ({
       }}
     >
       <ToolbarContent>
-        {FIELD_CONFIG.map(({ field, label }) => (
-          <ToolbarItem key={field}>
+        <ToolbarGroup variant="filter-group">
+          {FIELD_CONFIG.map(({ field, label }) => (
+            <ToolbarItem key={field}>
+              <FormSelect
+                aria-label={t(label)}
+                value={filter[field] ?? ALL_VALUE}
+                onChange={(_event, value) => {
+                  onFilterChange({ ...filter, [field]: value || undefined });
+                }}
+              >
+                <FormSelectOption
+                  value={ALL_VALUE}
+                  label={t('All {{label}}', { label: t(label) })}
+                />
+                {optionsByField[field].map((value) => (
+                  <FormSelectOption key={value} value={value} label={value} />
+                ))}
+              </FormSelect>
+            </ToolbarItem>
+          ))}
+          <ToolbarItem>
+            <Checkbox
+              id="aibom-drift-only"
+              label={t('Drift only')}
+              isChecked={!!filter.driftOnly}
+              onChange={(_event, checked) => {
+                onFilterChange({ ...filter, driftOnly: checked });
+              }}
+            />
+          </ToolbarItem>
+        </ToolbarGroup>
+        <ToolbarGroup align={{ default: 'alignEnd' }}>
+          <ToolbarItem>
+            <Content component="small">{t('Sort by')}</Content>
+          </ToolbarItem>
+          <ToolbarItem>
             <FormSelect
-              aria-label={t(label)}
-              value={filter[field] ?? ALL_VALUE}
+              aria-label={t('Sort by')}
+              value={sortKey}
               onChange={(_event, value) => {
-                onFilterChange({ ...filter, [field]: value || undefined });
+                onSortChange(value as SortKey, ascending);
               }}
             >
-              <FormSelectOption value={ALL_VALUE} label={t('All {{label}}', { label: t(label) })} />
-              {optionsByField[field].map((value) => (
-                <FormSelectOption key={value} value={value} label={value} />
+              <FormSelectOption value="age" label={t('Collected at')} />
+              {Object.entries(SORTABLE_METRICS).map(([sortKeyOption, metricKey]) => (
+                <FormSelectOption
+                  key={sortKeyOption}
+                  value={sortKeyOption}
+                  label={HARDWARE_METRIC_LABELS[metricKey] ?? sortKeyOption}
+                />
               ))}
             </FormSelect>
           </ToolbarItem>
-        ))}
-        <ToolbarItem>
-          <Checkbox
-            id="aibom-drift-only"
-            label={t('Drift only')}
-            isChecked={!!filter.driftOnly}
-            onChange={(_event, checked) => {
-              onFilterChange({ ...filter, driftOnly: checked });
-            }}
-          />
-        </ToolbarItem>
-        <ToolbarItem>
-          <FormSelect
-            aria-label={t('Sort by')}
-            value={sortKey}
-            onChange={(_event, value) => {
-              onSortChange(value as SortKey, ascending);
-            }}
-          >
-            <FormSelectOption value="age" label={t('Collected at')} />
-            {Object.keys(SORTABLE_METRICS).map((key) => (
-              <FormSelectOption key={key} value={key} label={key} />
-            ))}
-          </FormSelect>
-        </ToolbarItem>
-        <ToolbarItem>
-          <Checkbox
-            id="aibom-sort-ascending"
-            label={t('Ascending')}
-            isChecked={ascending}
-            onChange={(_event, checked) => {
-              onSortChange(sortKey, checked);
-            }}
-          />
-        </ToolbarItem>
+          <ToolbarItem>
+            <Checkbox
+              id="aibom-sort-ascending"
+              label={t('Ascending')}
+              isChecked={ascending}
+              onChange={(_event, checked) => {
+                onSortChange(sortKey, checked);
+              }}
+            />
+          </ToolbarItem>
+        </ToolbarGroup>
       </ToolbarContent>
     </Toolbar>
   );
