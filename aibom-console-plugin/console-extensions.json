@@ -1,0 +1,20 @@
+[
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/aiboms",
+      "component": { "$codeRef": "AIBOMListPage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "aiboms",
+      "name": "%plugin__aibom-console-plugin~AIBOMs%",
+      "href": "/aiboms",
+      "perspective": "admin",
+      "section": "home"
+    }
+  }
+]

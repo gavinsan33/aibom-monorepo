@@ -1,0 +1,17 @@
+{
+  "AIBOMs": "AIBOMs",
+  "All {{label}}": "All {{label}}",
+  "Ascending": "Ascending",
+  "Collected at": "Collected at",
+  "Drift only": "Drift only",
+  "Error loading AIBOMs": "Error loading AIBOMs",
+  "Experiment intent": "Experiment intent",
+  "GPU type": "GPU type",
+  "Job": "Job",
+  "Loading AIBOMs": "Loading AIBOMs",
+  "Model": "Model",
+  "No AIBOMs found": "No AIBOMs found",
+  "Quantization": "Quantization",
+  "Sort by": "Sort by",
+  "Unknown error": "Unknown error"
+}
