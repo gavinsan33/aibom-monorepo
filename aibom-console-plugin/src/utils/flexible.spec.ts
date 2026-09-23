@@ -1,4 +1,4 @@
-import { toFlexNumber } from './flexible';
+import { formatFlexNumber, toFlexNumber } from './flexible';
 
 describe('toFlexNumber', () => {
   it('accepts a plain number', () => {
@@ -23,5 +23,17 @@ describe('toFlexNumber', () => {
   it('returns undefined for non-finite numbers', () => {
     expect(toFlexNumber(NaN)).toBeUndefined();
     expect(toFlexNumber(Infinity)).toBeUndefined();
+  });
+});
+
+describe('formatFlexNumber', () => {
+  it('formats a valid number, optionally with fixed decimals', () => {
+    expect(formatFlexNumber(42)).toBe('42');
+    expect(formatFlexNumber(3.14159, 2)).toBe('3.14');
+  });
+
+  it('renders unparseable/missing values as an em dash', () => {
+    expect(formatFlexNumber(undefined)).toBe('—');
+    expect(formatFlexNumber('not-a-number')).toBe('—');
   });
 });

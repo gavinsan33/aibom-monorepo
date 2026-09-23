@@ -23,3 +23,10 @@ export function toFlexNumber(value: unknown): number | undefined {
   }
   return undefined;
 }
+
+/** `toFlexNumber` rendered for display: `'—'` when unparseable/missing, otherwise the number as a string (optionally fixed to `digits` decimal places). */
+export function formatFlexNumber(value: unknown, digits?: number): string {
+  const num = toFlexNumber(value);
+  if (num === undefined) return '—';
+  return digits === undefined ? String(num) : num.toFixed(digits);
+}

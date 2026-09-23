@@ -18,18 +18,11 @@ export const getGitRepository = (a: AIBOMResource): string =>
 export const getCollectedAt = (a: AIBOMResource): string => a.spec?.collectedAt ?? '';
 
 /** `""` (not undefined) when the optional `inference` block is absent, matching `Filter.Match`'s "no block means no match" behavior for a non-empty filter value. */
-export const getServingEngine = (a: AIBOMResource): string => {
-  const value = a.spec?.data?.inference?.serving_engine;
-  return typeof value === 'string' ? value : '';
-};
-export const getAdaptationMethod = (a: AIBOMResource): string => {
-  const value = a.spec?.data?.fine_tuning?.adaptation_method;
-  return typeof value === 'string' ? value : '';
-};
-export const getOptimizer = (a: AIBOMResource): string => {
-  const value = a.spec?.data?.training?.optimizer;
-  return typeof value === 'string' ? value : '';
-};
+export const getServingEngine = (a: AIBOMResource): string =>
+  a.spec?.data?.inference?.serving_engine ?? '';
+export const getAdaptationMethod = (a: AIBOMResource): string =>
+  a.spec?.data?.fine_tuning?.adaptation_method ?? '';
+export const getOptimizer = (a: AIBOMResource): string => a.spec?.data?.training?.optimizer ?? '';
 
 export const hasInference = (a: AIBOMResource): boolean => a.spec?.data?.inference != null;
 export const hasFineTuning = (a: AIBOMResource): boolean => a.spec?.data?.fine_tuning != null;
