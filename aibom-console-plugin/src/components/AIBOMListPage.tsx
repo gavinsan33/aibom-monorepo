@@ -1,0 +1,90 @@
+import type { FC } from 'react';
+import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import {
+  DocumentTitle,
+  isAllNamespacesKey,
+  ListPageHeader,
+  NamespaceBar,
+  useActiveNamespace,
+  useK8sWatchResource,
+} from '@openshift-console/dynamic-plugin-sdk';
+import { Alert, Bullseye, EmptyState, PageSection, Spinner } from '@patternfly/react-core';
+import type { AIBOMResource, SortKey } from '../types/aibom';
+import type { AIBOMFilter } from '../utils/filter';
+import { applyFilter } from '../utils/filter';
+import { sortItems } from '../utils/sort';
+import AIBOMFilterToolbar from './AIBOMFilterToolbar';
+import AIBOMListTable from './AIBOMListTable';
+
+const AIBOM_GVK = { group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOM' };
+
+const AIBOMListPage: FC = () => {
+  const { t } = useTranslation('plugin__aibom-console-plugin');
+  const [activeNamespace] = useActiveNamespace();
+  const [filter, setFilter] = useState<AIBOMFilter>({});
+  const [sortKey, setSortKey] = useState<SortKey>('age');
+  const [ascending, setAscending] = useState(false);
+
+  const [items, loaded, loadError] = useK8sWatchResource<AIBOMResource[]>({
+    groupVersionKind: AIBOM_GVK,
+    isList: true,
+    namespace: isAllNamespacesKey(activeNamespace) ? undefined : activeNamespace,
+  }) as [AIBOMResource[], boolean, unknown];
+
+  const visibleItems = useMemo(() => {
+    if (!loaded || loadError) return [];
+    const filtered = applyFilter(items, filter);
+    return sortItems(filtered, sortKey, ascending);
+  }, [items, loaded, loadError, filter, sortKey, ascending]);
+
+  return (
+    <>
+      <DocumentTitle>{t('AIBOMs')}</DocumentTitle>
+      <NamespaceBar />
+      <ListPageHeader title={t('AIBOMs')} />
+      <PageSection>
+        {loadError ? (
+          <Alert variant="danger" title={t('Error loading AIBOMs')}>
+            {loadError instanceof Error ? loadError.message : t('Unknown error')}
+          </Alert>
+        ) : !loaded ? (
+          <Bullseye>
+            <Spinner size="xl" aria-label={t('Loading AIBOMs')} />
+          </Bullseye>
+        ) : (
+          <>
+            <AIBOMFilterToolbar
+              items={items}
+              filter={filter}
+              onFilterChange={setFilter}
+              sortKey={sortKey}
+              ascending={ascending}
+              onSortChange={(key, asc) => {
+                setSortKey(key);
+                setAscending(asc);
+              }}
+            />
+            {visibleItems.length === 0 ? (
+              <Bullseye>
+                <EmptyState titleText={t('No AIBOMs found')} headingLevel="h4" />
+              </Bullseye>
+            ) : (
+              <AIBOMListTable
+                items={visibleItems}
+                sortKey={sortKey}
+                ascending={ascending}
+                onSort={(key, asc) => {
+                  setSortKey(key);
+                  setAscending(asc);
+                }}
+              />
+            )}
+          </>
+        )}
+      </PageSection>
+    </>
+  );
+};
+
+export default AIBOMListPage;
