@@ -1,12 +1,20 @@
+/* eslint-env node */
+
 import * as path from 'path';
-import { CopyRspackPlugin } from '@rspack/core';
-import { defineConfig } from '@rspack/cli';
+import { Configuration as WebpackConfiguration } from 'webpack';
+import { Configuration as WebpackDevServerConfiguration } from 'webpack-dev-server';
 import { ConsoleRemotePlugin } from '@openshift-console/dynamic-plugin-sdk-webpack';
-import { TsCheckerRspackPlugin } from 'ts-checker-rspack-plugin';
+
+const CopyWebpackPlugin = require('copy-webpack-plugin');
+const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 
 const isProd = process.env.NODE_ENV === 'production';
 
-export default defineConfig({
+interface Configuration extends WebpackConfiguration {
+  devServer?: WebpackDevServerConfiguration;
+}
+
+const config: Configuration = {
   mode: isProd ? 'production' : 'development',
   // No regular entry points needed. All plugin related scripts are generated via ConsoleRemotePlugin.
   entry: {},
@@ -24,29 +32,11 @@ export default defineConfig({
       {
         test: /\.(jsx?|tsx?)$/,
         exclude: /\/node_modules\//,
-        use: {
-          loader: 'builtin:swc-loader',
-          options: {
-            detectSyntax: 'auto',
-            jsc: {
-              transform: {
-                react: {
-                  runtime: 'automatic'
-                },
-                reactCompiler: {
-                  target: '18',
-                },
-              },
-              target: 'es2021',
-            },
-          },
-        },
-        type: 'javascript/auto',
+        use: ['swc-loader'],
       },
       {
         test: /\.(css)$/,
-        use: 'builtin:lightningcss-loader',
-        type: 'css',
+        use: ['style-loader', 'css-loader'],
       },
       {
         test: /\.(png|jpg|jpeg|gif|svg|woff2?|ttf|eot|otf)(\?.*$|$)/,
@@ -79,14 +69,20 @@ export default defineConfig({
   },
   plugins: [
     new ConsoleRemotePlugin(),
-    new TsCheckerRspackPlugin({
+    new ForkTsCheckerWebpackPlugin({
       typescript: {
         configFile: path.resolve(__dirname, 'tsconfig.json'),
       },
     }),
-    new CopyRspackPlugin({
+    new CopyWebpackPlugin({
       patterns: [{ from: path.resolve(__dirname, 'locales'), to: 'locales' }],
     }),
   ],
   devtool: isProd ? false : 'source-map',
-});
+  optimization: {
+    chunkIds: isProd ? 'deterministic' : 'named',
+    minimize: isProd,
+  },
+};
+
+export default config;
