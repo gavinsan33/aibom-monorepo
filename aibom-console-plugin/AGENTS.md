@@ -12,13 +12,25 @@ federation), react-i18next, Playwright, Helm.
 
 **Compatibility:** OpenShift 4.12+ (`ConsolePlugin` CRD v1).
 
-## Scope (v1)
+## Scope
 
-Only a **List view** exists so far: filter/sort AIBOMs, mirroring
-[`oc-aibom list`](https://github.com/gavinsan33/oc-aibom)'s field mapping and
-sort/filter semantics exactly. Detail view, Compare view, segmented
-performance charts, and live Prometheus telemetry are deliberately out of
-scope until later work (see
+**List view** (`src/components/AIBOMListPage.tsx`): filter/sort AIBOMs,
+mirroring [`oc-aibom list`](https://github.com/gavinsan33/oc-aibom)'s field
+mapping and sort/filter semantics exactly.
+
+**Detail view** (`src/components/AIBOMDetailPage.tsx` + `src/components/detail/`):
+a single AIBOM's full field breakdown, mirroring `oc-aibom describe`'s
+section order and field mapping (see that project's `cmd/kubectl-aibom/main.go`
+`printDescribe` if extending this). Deliberately does **not** port
+`describe`'s Ed25519 + RFC 8785 (JCS) signature verification — the
+`Signature:` row only reports presence (`signed — not verified in this view`
+/ `not signed`). Porting real verification (WebCrypto/Ed25519 + a JCS
+canonicalization lib + a cluster ConfigMap lookup) is a deliberate future
+step, not an oversight — don't half-implement it.
+
+Compare view, segmented-chart visualizations (beyond the existing metrics
+tables), and live Prometheus telemetry are deliberately out of scope until
+later work (see
 [aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94)).
 Don't add them speculatively.
 
@@ -54,9 +66,21 @@ and re-check `*.spec.ts` against the Go `*_test.go` files.
 - `AIBOMListPage.tsx` owns data fetching (`useK8sWatchResource` against GVK
   `{group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOM'}`) and filter/sort
   state; `AIBOMFilterToolbar.tsx` and `AIBOMListTable.tsx` are presentational.
+  Table rows link to `/aiboms/:namespace/:name` via `react-router`'s `Link`.
+- `AIBOMDetailPage.tsx` fetches a single AIBOM (`useParams` for
+  namespace/name) and delegates to one section component per `describe`
+  section under `src/components/detail/` — each takes only the narrow slice
+  of `AIBOMData` it renders, not the whole resource. `detail/Field.tsx` is a
+  shared label/value row that renders nothing when its value is
+  missing/empty/false, so section components don't need their own presence
+  checks. `detail/AIBOMMetricsTable.tsx` is shared between Hardware
+  Performance and Inference Performance (same table shape, different
+  metric key order/labels) — don't fork it into two components.
 - Namespace scope comes from the console's own `useActiveNamespace`/
   `NamespaceBar` (the `#ALL_NS#` sentinel, `ALL_NAMESPACES_KEY`, means "all
-  projects") — don't reimplement an explicit all-namespaces toggle.
+  projects") — don't reimplement an explicit all-namespaces toggle. The
+  Detail view instead takes namespace from its own route param, since it's
+  reached by a direct link, not the namespace switcher.
 
 ### Styling Constraints
 
