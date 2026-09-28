@@ -5,7 +5,41 @@ default:
 # quay.io org/user to push charts to, e.g. quay.io/<your-org>.
 # Override per-invocation with --repo=<repo>.
 default_repo := "quay.io/gsanders"
-values_file := ""
+
+# --- Cluster deployment --------------------------------------------------------
+
+# Every recipe below that talks to a cluster depends on this, so it always runs first.
+_check-auth:
+    @oc whoami >/dev/null 2>&1 || { echo "error: not logged in to a cluster — run 'oc login' first" >&2; exit 1; }
+
+# Install/upgrade the console plugin chart from Quay. Works once the chart is
+# pushed to Quay (via `just chart-push`) or is available via another OCI
+# registry. Seamless default: `just deploy` with no arguments pulls the
+# mutable-latest tag from quay.io/gsanders/aibom-console-plugin. Override the
+# repo or version to deploy a different source or pin to an immutable sha tag.
+#
+# Usage: just deploy [--repo=<repo>] [--version=<tag>] [--values=<file>]
+[group('deploy')]
+deploy *args: _check-auth
+    #!/usr/bin/env bash
+    set -euo pipefail
+    repo="{{ default_repo }}"
+    version="latest"
+    values_file=""
+    for arg in {{ args }}; do
+        case "$arg" in
+            --repo=*) repo="${arg#--repo=}" ;;
+            --version=*) version="${arg#--version=}" ;;
+            --values=*) values_file="${arg#--values=}" ;;
+            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, or --values=<file>)" >&2; exit 1 ;;
+        esac
+    done
+    values_args=()
+    [[ -n "$values_file" ]] && values_args=(-f "$values_file")
+    helm upgrade --install aibom-console-plugin "oci://$repo/aibom-console-plugin" \
+        -n aibom-console-plugin --create-namespace \
+        --version "$version" \
+        "${values_args[@]}"
 
 # --- Chart publishing --------------------------------------------------------
 #
@@ -28,7 +62,7 @@ values_file := ""
 #
 # Usage: just chart-push [--repo=<repo>]
 [group('charts')]
-chart-push *args values_file:
+chart-push *args:
     #!/usr/bin/env bash
     set -euo pipefail
     repo="{{ default_repo }}"
@@ -46,8 +80,8 @@ chart-push *args values_file:
     chart_name="$(grep '^name:' "charts/$chart_dir/Chart.yaml" | awk '{print $2}')"
     base_version="$(grep '^version:' "charts/$chart_dir/Chart.yaml" | awk '{print $2}')"
     pinned_version="${base_version}-${sha}"
-    helm package "charts/$chart_dir" -d "$pkg_dir" --values "$values_file"
-    helm package "charts/$chart_dir" -d "$pkg_dir" --version "$pinned_version" --values "$values_file"
+    helm package "charts/$chart_dir" -d "$pkg_dir"
+    helm package "charts/$chart_dir" -d "$pkg_dir" --version "$pinned_version"
     helm push "$pkg_dir/$chart_name-$base_version.tgz" "oci://$repo"
     helm push "$pkg_dir/$chart_name-${pinned_version}.tgz" "oci://$repo"
     echo "pushed oci://$repo/$chart_name — mutable: $base_version, pin with: --version=$pinned_version"
