@@ -99,13 +99,47 @@ changes.
 
 ## Deployment
 
-Build and push an image, then install the Helm chart:
+### Quick start: Install from Quay
+
+#### Using `values_file`
+
+To specify a values file when pushing the chart, use the `values_file` parameter with the `chart-push` target in `justfile`. For example:
+
+```sh
+just chart-push --repo=<repo> values_file=path/to/values.yaml
+```
+
+The Helm chart is published to Quay and auto-built on every push to main:
+
+```sh
+helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
+  -n aibom-console-plugin --create-namespace
+```
+
+To pin a specific chart version (immutable tag):
+
+```sh
+helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
+  -n aibom-console-plugin --create-namespace \
+  --version 0.1.0-abc1234
+```
+
+To use a different Quay org/repo:
+
+```sh
+helm upgrade -i aibom-console-plugin oci://quay.io/your-org/aibom-console-plugin \
+  -n aibom-console-plugin --create-namespace
+```
+
+### Alternative: Build and push your own image
+
+If you want to customize the plugin, build and push an image, then install:
 
 ```sh
 docker build -t quay.io/my-repository/aibom-console-plugin:latest .
 docker push quay.io/my-repository/aibom-console-plugin:latest
 
-helm upgrade -i aibom-console-plugin charts/openshift-console-plugin \
+helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
   -n aibom-console-plugin --create-namespace \
   --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest
 ```
