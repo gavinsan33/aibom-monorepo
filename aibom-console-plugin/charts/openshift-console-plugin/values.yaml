@@ -11,7 +11,7 @@ plugin:
     # Show the Telemetry tab (live Prometheus charts) on the AIBOM Detail
     # view. Rendered into the plugin's served feature-flags.json; no RBAC
     # is involved.
-    telemetryTab: false
+    telemetryTab: true
   securityContext:
     enabled: true
   podSecurityContext:
