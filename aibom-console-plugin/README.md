@@ -17,45 +17,12 @@ See that project's own README for the underlying dynamic-plugin mechanics
 (module federation, `ConsolePlugin` CR, i18n, linting rules) not repeated
 here.
 
-## Status
+## Features
 
-**List, Detail, and Compare views.** Filter/sort AIBOMs across a namespace or
-all projects (mirroring `oc-aibom list`), and click into a single AIBOM for
-its full field breakdown — model, dataset drift, source provenance,
-training/fine-tuning/inference config, environment, per-pod status, and
-segmented hardware/inference performance tables (mirroring `oc-aibom
-describe`). The Detail view's `Signature:` row reports presence only
-(`signed — not verified in this view` / `not signed`) — it does not perform
-`oc-aibom`'s Ed25519 + RFC 8785 verification.
-
-Select 2+ AIBOMs from the List view (checkbox column) and click **Compare**
-to see them side by side: every field `oc-aibom diff` tracks (model,
-dataset, source, environment, metadata) shown for all selected items with
-divergent rows flagged, and a hardware-performance table with a value +
-trend sparkline per item, plus Delta/% Change columns when comparing exactly
-2. Unifies `oc-aibom`'s two separate `diff`/`compare` commands into one
-N-scalable view rather than replicating both CLI shapes.
-
-The Detail view's **Telemetry** tab shows live, full-resolution time-series
-charts — not just the CR's stored min/max/avg/p95 — via the console SDK's
-`QueryBrowser`, querying the cluster's Prometheus directly with the exact
-same PromQL `aibom-webhook-service`'s `postprocess.py` uses, scoped to the
-AIBOM's own pod(s) and run window. Hardware charts (GPU/CPU/memory/network/
-storage) show when the workload requested a GPU; inference charts (TTFT,
-ITL, queue depth, KV-cache, throughput) show for vLLM workloads. Because
-`QueryBrowser` is given a `namespace`, the console routes these queries
-through its **tenancy-scoped** Prometheus proxy (`/api/prometheus-tenancy`,
-`thanos-querier.openshift-monitoring.svc:9092`) rather than the
-cluster-wide admin one — that endpoint's own authorization only requires
-`get` on `pods.metrics.k8s.io` in the AIBOM's namespace, which the standard
-`view` ClusterRole already includes. **No extra RBAC beyond `aibom-view`'s
-existing `view` aggregation is needed** for a real in-cluster deployment.
-(This *cannot* be verified via `yarn start-console`'s local dev loop — its
-off-cluster bridge mode collapses the admin and tenancy proxies to the same
-single URL, which can't reach the real tenancy-enforcing port; local
-testing of the Telemetry tab will always demand `cluster-monitoring-view`
-regardless of this design. Verify only against a real deployment via the
-Helm chart below.)
+- **List view**: Filter/sort AIBOMs across a namespace or all projects (mirroring `oc-aibom list`)
+- **Detail view**: Full field breakdown — model, dataset, environment, performance tables (mirroring `oc-aibom describe`)
+- **Compare view**: Side-by-side comparison of 2+ AIBOMs with hardware/inference metrics and delta calculations
+- **Telemetry tab**: Live Prometheus charts for GPU, CPU, memory, network, and inference metrics (vLLM)
 
 ## Prerequisites
 
@@ -97,38 +64,70 @@ same field mapping, same case-insensitive exact-match semantics, same
 missing-metric/unparseable-date edge cases. Keep the two in sync if either
 changes.
 
+## Building & Pushing
+
+### Container image
+
+Build the image locally:
+
+```sh
+just docker-build
+```
+
+Push to Quay (requires `docker login quay.io`):
+
+```sh
+just docker-push
+```
+
+Or build, push, and deploy in one go:
+
+```sh
+just deploy-local
+```
+
+Images auto-build on every push to main via GitHub Actions, pushing both `:latest` (mutable) and `:${commit_sha}` (immutable) tags to `quay.io/gsanders/aibom-console-plugin`.
+
+### Helm chart
+
+Push the chart to Quay (requires `helm registry login quay.io`):
+
+```sh
+just chart-push
+```
+
+This publishes both a mutable version tag (e.g., `0.1.0`) and an immutable SHA-pinned tag (e.g., `0.1.0-abc1234`) for rollback safety.
+
 ## Deployment
 
-Build and push an image, then install the Helm chart:
+Log in to your cluster and deploy:
 
 ```sh
-docker build -t quay.io/my-repository/aibom-console-plugin:latest .
-docker push quay.io/my-repository/aibom-console-plugin:latest
-
-helm upgrade -i aibom-console-plugin charts/openshift-console-plugin \
-  -n aibom-console-plugin --create-namespace \
-  --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest
+oc login
+just deploy
 ```
 
-The chart's `patch-consoles` Job (enabled by default,
-`plugin.jobs.patchConsoles.enabled`) adds the plugin to the cluster's
-`Console` CR automatically — no separate manual step. Disable it and edit
-`Console`'s `spec.plugins` yourself if you'd rather not grant that Job's
-scoped `consoles.operator.openshift.io` get/list/patch `ClusterRole`.
+This pulls the latest chart and image from `quay.io/gsanders/aibom-console-plugin` and installs to the `aibom-console-plugin` namespace.
 
-To hide the Detail view's Telemetry tab (live Prometheus charts) on a
-deployment, set `plugin.featureFlags.telemetryTab=false`:
+### Common options
+
+Pin a specific version:
 
 ```sh
-helm upgrade -i aibom-console-plugin charts/openshift-console-plugin \
-  -n aibom-console-plugin --create-namespace \
-  --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest \
-  --set plugin.featureFlags.telemetryTab=false
+just deploy --version=0.1.0-abc1234
 ```
 
-The chart renders the flag into a `feature-flags.json` file the plugin
-fetches at runtime, so toggling it only requires a `helm upgrade` — no
-rebuild. No RBAC is involved.
+Deploy from a different Quay org or with custom values:
 
-See `charts/openshift-console-plugin/values.yaml` for the full set of
-parameters (replicas, resources, image pull secrets, etc.).
+```sh
+just deploy --repo=quay.io/your-org --values=values-prod.yaml
+```
+
+Or use Helm directly:
+
+```sh
+helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
+  -n aibom-console-plugin --create-namespace
+```
+
+See `charts/openshift-console-plugin/values.yaml` for all configuration options.

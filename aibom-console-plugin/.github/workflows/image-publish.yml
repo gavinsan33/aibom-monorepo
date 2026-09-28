@@ -1,0 +1,39 @@
+name: Publish image to Quay
+
+# Auto-build the container image on every push to main via Quay's GitHub build
+# trigger — this workflow is not strictly necessary, but documents the process.
+# One-time setup: add a GitHub build trigger in the Quay UI pointing this repo
+# to the aibom-console-plugin repo, with build trigger type "Push to branch",
+# branch "main", and Dockerfile location "/Dockerfile" — Quay will then build
+# automatically and push `:latest` (mutable) and `:${commit_sha}` (immutable).
+#
+# If Quay auto-build is set up, you can also trigger builds manually with
+# `just docker-push` after `docker login quay.io`.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  image-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Quay
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_ROBOT_USERNAME }}
+          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            quay.io/gsanders/aibom-console-plugin:latest
+            quay.io/gsanders/aibom-console-plugin:${{ github.sha }}
