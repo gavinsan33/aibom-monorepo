@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
 import {
@@ -32,6 +32,7 @@ import AIBOMMetadataSection from './detail/AIBOMMetadataSection';
 import AIBOMMetricsTable from './detail/AIBOMMetricsTable';
 import AIBOMTelemetryTab from './detail/AIBOMTelemetryTab';
 import Section from './detail/Section';
+import { getPluginFeatureFlags } from '../utils/pluginFeatureFlags';
 
 const AIBOM_GVK = { group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOM' };
 
@@ -39,6 +40,19 @@ const AIBOMDetailPage: FC = () => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const { namespace, name } = useParams<{ namespace: string; name: string }>();
   const [activeTab, setActiveTab] = useState<string | number>('overview');
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPluginFeatureFlags().then((flags) => {
+      if (!cancelled) {
+        setTelemetryEnabled(flags.telemetryTab);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [item, loaded, loadError] = useK8sWatchResource<AIBOMResource>({
     groupVersionKind: AIBOM_GVK,
@@ -100,9 +114,11 @@ const AIBOMDetailPage: FC = () => {
                 <AIBOMMetadataSection metadata={data?._metadata} />
               </Grid>
             </Tab>
-            <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
-              <AIBOMTelemetryTab item={item} />
-            </Tab>
+            {telemetryEnabled && (
+              <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
+                <AIBOMTelemetryTab item={item} />
+              </Tab>
+            )}
           </Tabs>
         )}
       </PageSection>

@@ -62,6 +62,17 @@ inference charts gate on `inference.serving_engine === 'vllm'` -- matches
 the existing tables' own gating logic, so don't add hardware charts for a
 non-GPU workload just because pods exist.
 
+**Telemetry tab toggle**: the tab is enabled/disabled per deployment via
+Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
+`feature-flags.json` key in the plugin's ConfigMap, mounted over the
+baked-in default (repo-root `feature-flags.json`, copied to `dist/` at
+build) at `/usr/share/nginx/html/feature-flags.json`;
+`src/utils/pluginFeatureFlags.ts` fetches it at runtime through the
+console's same-origin `/api/plugins/<name>/` proxy (the prefix webpack's
+publicPath uses for chunks) and defaults to *enabled* when the file is
+missing or unreadable. Don't gate it on cluster RBAC or watch a cluster
+resource for it -- the plugin's SA has no API access by design.
+
 **RBAC (verified, not guessed)**: `QueryBrowser` is always given a
 `namespace` prop, which makes console's own `getPrometheusURL` route
 through the *tenancy-scoped* Prometheus proxy (`/api/prometheus-tenancy` ->

@@ -15,6 +15,8 @@ spec:
     metadata:
       labels:
             {{- include "openshift-console-plugin.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       {{- with .Values.plugin.imagePullSecrets }}
       imagePullSecrets:
@@ -40,6 +42,10 @@ spec:
               readOnly: true
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
+            - name: nginx-conf
+              readOnly: true
+              mountPath: /usr/share/nginx/html/feature-flags.json
+              subPath: feature-flags.json
       volumes:
         - name: {{ template "openshift-console-plugin.certificateSecret" . }}
           secret:

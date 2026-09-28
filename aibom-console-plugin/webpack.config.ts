@@ -75,7 +75,10 @@ const config: Configuration = {
       },
     }),
     new CopyWebpackPlugin({
-      patterns: [{ from: path.resolve(__dirname, 'locales'), to: 'locales' }],
+      patterns: [
+        { from: path.resolve(__dirname, 'locales'), to: 'locales' },
+        { from: path.resolve(__dirname, 'feature-flags.json'), to: 'feature-flags.json' },
+      ],
     }),
   ],
   devtool: isProd ? false : 'source-map',

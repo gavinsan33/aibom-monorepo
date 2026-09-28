@@ -3,10 +3,15 @@ plugin:
   name: "aibom-console-plugin"
   description: "AIBOM Console Plugin"
   image: ""
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   imagePullSecrets: []
   replicas: 2
   port: 9443
+  featureFlags:
+    # Show the Telemetry tab (live Prometheus charts) on the AIBOM Detail
+    # view. Rendered into the plugin's served feature-flags.json; no RBAC
+    # is involved.
+    telemetryTab: false
   securityContext:
     enabled: true
   podSecurityContext:

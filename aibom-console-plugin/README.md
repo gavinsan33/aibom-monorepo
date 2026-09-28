@@ -116,5 +116,19 @@ The chart's `patch-consoles` Job (enabled by default,
 `Console`'s `spec.plugins` yourself if you'd rather not grant that Job's
 scoped `consoles.operator.openshift.io` get/list/patch `ClusterRole`.
 
+To hide the Detail view's Telemetry tab (live Prometheus charts) on a
+deployment, set `plugin.featureFlags.telemetryTab=false`:
+
+```sh
+helm upgrade -i aibom-console-plugin charts/openshift-console-plugin \
+  -n aibom-console-plugin --create-namespace \
+  --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest \
+  --set plugin.featureFlags.telemetryTab=false
+```
+
+The chart renders the flag into a `feature-flags.json` file the plugin
+fetches at runtime, so toggling it only requires a `helm upgrade` — no
+rebuild. No RBAC is involved.
+
 See `charts/openshift-console-plugin/values.yaml` for the full set of
 parameters (replicas, resources, image pull secrets, etc.).
