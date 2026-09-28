@@ -86,7 +86,7 @@ Or build, push, and deploy in one go:
 just deploy-local
 ```
 
-Images auto-build on every push to main via GitHub Actions, pushing both `:latest` (mutable) and `:${commit_sha}` (immutable) tags to `quay.io/gsanders/aibom-console-plugin`.
+Images auto-build on every push to main via Quay's GitHub build trigger, pushing both `:latest` (mutable) and `:${commit_sha}` (immutable) tags. One-time setup: add a GitHub build trigger in the Quay UI for this repo (branch `main`, Dockerfile `/Dockerfile`).
 
 ### Helm chart
 
