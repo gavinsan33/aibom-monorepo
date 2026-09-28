@@ -36,15 +36,33 @@ trend sparkline per item, plus Delta/% Change columns when comparing exactly
 2. Unifies `oc-aibom`'s two separate `diff`/`compare` commands into one
 N-scalable view rather than replicating both CLI shapes.
 
-Live Prometheus telemetry is tracked as follow-up work — see
-[aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94).
+The Detail view's **Telemetry** tab shows live, full-resolution time-series
+charts — not just the CR's stored min/max/avg/p95 — via the console SDK's
+`QueryBrowser`, querying the cluster's Prometheus directly with the exact
+same PromQL `aibom-webhook-service`'s `postprocess.py` uses, scoped to the
+AIBOM's own pod(s) and run window. Hardware charts (GPU/CPU/memory/network/
+storage) show when the workload requested a GPU; inference charts (TTFT,
+ITL, queue depth, KV-cache, throughput) show for vLLM workloads. Because
+`QueryBrowser` is given a `namespace`, the console routes these queries
+through its **tenancy-scoped** Prometheus proxy (`/api/prometheus-tenancy`,
+`thanos-querier.openshift-monitoring.svc:9092`) rather than the
+cluster-wide admin one — that endpoint's own authorization only requires
+`get` on `pods.metrics.k8s.io` in the AIBOM's namespace, which the standard
+`view` ClusterRole already includes. **No extra RBAC beyond `aibom-view`'s
+existing `view` aggregation is needed** for a real in-cluster deployment.
+(This *cannot* be verified via `yarn start-console`'s local dev loop — its
+off-cluster bridge mode collapses the admin and tenancy proxies to the same
+single URL, which can't reach the real tenancy-enforcing port; local
+testing of the Telemetry tab will always demand `cluster-monitoring-view`
+regardless of this design. Verify only against a real deployment via the
+Helm chart below.)
 
 ## Prerequisites
 
 - `aibom-webhook-service`'s CRD (`aiboms.aibom.io`) and its `aibom-view`
   aggregated `ClusterRole` installed on the cluster. A user with `view` on a
-  namespace can already browse AIBOMs there through this plugin with no
-  extra RBAC grant — this repo does not create or duplicate that role.
+  namespace can already browse AIBOMs there through this plugin — including
+  the Telemetry tab's live charts — with no extra RBAC grant.
 - Node.js and [yarn](https://yarnpkg.com) to build the plugin.
 - `oc`/`kubectl` and an OpenShift cluster (4.12+, `ConsolePlugin` CRD v1) to
   run or deploy it.
@@ -97,6 +115,20 @@ The chart's `patch-consoles` Job (enabled by default,
 `Console` CR automatically — no separate manual step. Disable it and edit
 `Console`'s `spec.plugins` yourself if you'd rather not grant that Job's
 scoped `consoles.operator.openshift.io` get/list/patch `ClusterRole`.
+
+To hide the Detail view's Telemetry tab (live Prometheus charts) on a
+deployment, set `plugin.featureFlags.telemetryTab=false`:
+
+```sh
+helm upgrade -i aibom-console-plugin charts/openshift-console-plugin \
+  -n aibom-console-plugin --create-namespace \
+  --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest \
+  --set plugin.featureFlags.telemetryTab=false
+```
+
+The chart renders the flag into a `feature-flags.json` file the plugin
+fetches at runtime, so toggling it only requires a `helm upgrade` — no
+rebuild. No RBAC is involved.
 
 See `charts/openshift-console-plugin/values.yaml` for the full set of
 parameters (replicas, resources, image pull secrets, etc.).

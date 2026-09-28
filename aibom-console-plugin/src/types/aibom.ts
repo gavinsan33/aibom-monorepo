@@ -177,6 +177,8 @@ export const HARDWARE_METRIC_ORDER = [
   'memory_usage',
   'network_receive',
   'network_transmit',
+  'storage_read_throughput',
+  'storage_write_throughput',
 ] as const;
 
 export const HARDWARE_METRIC_LABELS: Record<string, string> = {
@@ -187,6 +189,8 @@ export const HARDWARE_METRIC_LABELS: Record<string, string> = {
   memory_usage: 'Memory Usage',
   network_receive: 'Network RX',
   network_transmit: 'Network TX',
+  storage_read_throughput: 'Storage Read',
+  storage_write_throughput: 'Storage Write',
 };
 
 /** `inference.performance.metrics` key order/labels, mirroring `oc-aibom`'s `vllmMetricOrder`/`vllmMetricLabels`. */

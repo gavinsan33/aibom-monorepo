@@ -1,4 +1,5 @@
 import type { FC } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
 import {
@@ -6,7 +7,16 @@ import {
   ListPageHeader,
   useK8sWatchResource,
 } from '@openshift-console/dynamic-plugin-sdk';
-import { Alert, Bullseye, Grid, PageSection, Spinner } from '@patternfly/react-core';
+import {
+  Alert,
+  Bullseye,
+  Grid,
+  PageSection,
+  Spinner,
+  Tab,
+  Tabs,
+  TabTitleText,
+} from '@patternfly/react-core';
 import type { AIBOMResource } from '../types/aibom';
 import { HARDWARE_METRIC_LABELS, HARDWARE_METRIC_ORDER } from '../types/aibom';
 import AIBOMHeaderSection from './detail/AIBOMHeaderSection';
@@ -20,13 +30,29 @@ import AIBOMEnvironmentSection from './detail/AIBOMEnvironmentSection';
 import AIBOMPodsSection from './detail/AIBOMPodsSection';
 import AIBOMMetadataSection from './detail/AIBOMMetadataSection';
 import AIBOMMetricsTable from './detail/AIBOMMetricsTable';
+import AIBOMTelemetryTab from './detail/AIBOMTelemetryTab';
 import Section from './detail/Section';
+import { getPluginFeatureFlags } from '../utils/pluginFeatureFlags';
 
 const AIBOM_GVK = { group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOM' };
 
 const AIBOMDetailPage: FC = () => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const { namespace, name } = useParams<{ namespace: string; name: string }>();
+  const [activeTab, setActiveTab] = useState<string | number>('overview');
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPluginFeatureFlags().then((flags) => {
+      if (!cancelled) {
+        setTelemetryEnabled(flags.telemetryTab);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [item, loaded, loadError] = useK8sWatchResource<AIBOMResource>({
     groupVersionKind: AIBOM_GVK,
@@ -52,32 +78,48 @@ const AIBOMDetailPage: FC = () => {
             <Spinner size="xl" aria-label={t('Loading AIBOM')} />
           </Bullseye>
         ) : (
-          <Grid hasGutter>
-            <AIBOMHeaderSection item={item} />
-            <AIBOMModelSection model={data?.model} />
-            <AIBOMDatasetSection dataset={data?.dataset} />
-            <AIBOMSourceSection sourceCode={data?.source_code} />
-            <AIBOMEnvironmentSection environment={data?.environment} />
-            <AIBOMTrainingSection training={data?.training} />
-            <AIBOMFineTuningSection fineTuning={data?.fine_tuning} />
-            <AIBOMInferenceSection inference={data?.inference} />
-            <AIBOMPodsSection pods={data?.execution_metadata?.pods} />
-            {data?.resource_utilization && (
-              <Section title={t('Hardware Performance')}>
-                <AIBOMMetricsTable
-                  title={t('Hardware Performance')}
-                  showTitle={false}
-                  metrics={data.resource_utilization.metrics}
-                  order={HARDWARE_METRIC_ORDER}
-                  labels={HARDWARE_METRIC_LABELS}
-                  summaryIncludesColdStart={data.resource_utilization.summary_includes_cold_start}
-                  grafanaLinks={data.resource_utilization.grafana_links}
-                  note={data.resource_utilization.note}
-                />
-              </Section>
+          <Tabs
+            activeKey={activeTab}
+            onSelect={(_event, key) => {
+              setActiveTab(key);
+            }}
+          >
+            <Tab eventKey="overview" title={<TabTitleText>{t('Overview')}</TabTitleText>}>
+              <Grid hasGutter>
+                <AIBOMHeaderSection item={item} />
+                <AIBOMModelSection model={data?.model} />
+                <AIBOMDatasetSection dataset={data?.dataset} />
+                <AIBOMSourceSection sourceCode={data?.source_code} />
+                <AIBOMEnvironmentSection environment={data?.environment} />
+                <AIBOMTrainingSection training={data?.training} />
+                <AIBOMFineTuningSection fineTuning={data?.fine_tuning} />
+                <AIBOMInferenceSection inference={data?.inference} />
+                <AIBOMPodsSection pods={data?.execution_metadata?.pods} />
+                {data?.resource_utilization && (
+                  <Section title={t('Hardware Performance')}>
+                    <AIBOMMetricsTable
+                      title={t('Hardware Performance')}
+                      showTitle={false}
+                      metrics={data.resource_utilization.metrics}
+                      order={HARDWARE_METRIC_ORDER}
+                      labels={HARDWARE_METRIC_LABELS}
+                      summaryIncludesColdStart={
+                        data.resource_utilization.summary_includes_cold_start
+                      }
+                      grafanaLinks={data.resource_utilization.grafana_links}
+                      note={data.resource_utilization.note}
+                    />
+                  </Section>
+                )}
+                <AIBOMMetadataSection metadata={data?._metadata} />
+              </Grid>
+            </Tab>
+            {telemetryEnabled && (
+              <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
+                <AIBOMTelemetryTab item={item} />
+              </Tab>
             )}
-            <AIBOMMetadataSection metadata={data?._metadata} />
-          </Grid>
+          </Tabs>
         )}
       </PageSection>
     </>

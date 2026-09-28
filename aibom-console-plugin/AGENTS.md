@@ -42,8 +42,67 @@ you're tempted to add a `Trend()`-word-based badge (`"up"`/`"down"`/`"flat"`/
 actually rendered by any CLI command, so there's no reference format to
 mirror and you'd be inventing presentation, not porting it.
 
-Segmented-chart visualizations (beyond the existing metrics tables) and live
-Prometheus telemetry are deliberately out of scope until later work (see
+**Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
+`AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
+charts, one per metric, via the console SDK's `QueryBrowser` component --
+**not** a custom chart renderer or a new charting library dependency.
+`src/utils/promql.ts` builds the PromQL, mirroring
+`aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
+`VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
+windows, the `exported_pod` vs. `pod` label distinction for GPU vs.
+everything else) so live charts read the same series the AIBOM's own
+recorded stats came from. If those queries ever change upstream, update
+`promql.ts` and its tests to match -- a drifted label silently produces an
+empty/wrong chart with no error. Time window is `earliestPodStart(pods)` to
+`spec.collectedAt`, cold start included (unlike the summary stats' trimmed
+window) since showing that shape is the tab's whole point. Multi-pod
+(JobSet) support is a `pod=~"a|b|c"` regex alternation across all pod names,
+not a query per pod. Hardware charts gate on `environment.gpu_count > 0`;
+inference charts gate on `inference.serving_engine === 'vllm'` -- matches
+the existing tables' own gating logic, so don't add hardware charts for a
+non-GPU workload just because pods exist.
+
+**Telemetry tab toggle**: the tab is enabled/disabled per deployment via
+Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
+`feature-flags.json` key in the plugin's ConfigMap, mounted over the
+baked-in default (repo-root `feature-flags.json`, copied to `dist/` at
+build) at `/usr/share/nginx/html/feature-flags.json`;
+`src/utils/pluginFeatureFlags.ts` fetches it at runtime through the
+console's same-origin `/api/plugins/<name>/` proxy (the prefix webpack's
+publicPath uses for chunks) and defaults to *enabled* when the file is
+missing or unreadable. Don't gate it on cluster RBAC or watch a cluster
+resource for it -- the plugin's SA has no API access by design.
+
+**RBAC (verified, not guessed)**: `QueryBrowser` is always given a
+`namespace` prop, which makes console's own `getPrometheusURL` route
+through the *tenancy-scoped* Prometheus proxy (`/api/prometheus-tenancy` ->
+`thanos-querier.openshift-monitoring.svc:9092`) instead of the cluster-wide
+admin one (`/api/prometheus` -> `:9091`, needs `cluster-monitoring-view`).
+The tenancy port's `kube-rbac-proxy` sidecar (per
+`cluster-monitoring-operator`'s own `thanos-querier.libsonnet`) authorizes
+by checking `get` on `pods.metrics.k8s.io` in the query's `namespace` param
+-- confirmed present in the standard `view` ClusterRole via `oc get
+clusterrole view -o yaml` and a live `oc auth can-i get pods.metrics.k8s.io
+-n <ns>` check. **Don't add a `cluster-monitoring-view` RBAC requirement or
+grant anywhere in this repo or `aibom-webhook-service`'s charts for viewer
+access** -- it's already covered by `aibom-view`'s `view` aggregation. If
+you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
+switch back to the admin-only endpoint and reintroduce this requirement.
+
+**Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
+mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
+*both* the admin and tenancy proxy configs at the same single public Thanos
+URL -- there is no way to reach the real tenancy-enforcing `:9092` service
+from outside the cluster (it's ClusterIP-only by design). So the Telemetry
+tab will *always* 403/404 in local dev regardless of this design being
+correct, and will require `cluster-monitoring-view` locally no matter what.
+Don't "fix" this by loosening the real RBAC design to work around a
+local-only limitation -- verify the Telemetry tab only via an actual
+in-cluster deployment (Helm chart, registered on the real `Console` CR).
+
+Segmented-chart visualizations beyond what the existing metrics tables and
+the Telemetry tab already cover are deliberately out of scope until later
+work (see
 [aibom-webhook-service#94](https://github.com/gavinsan33/aibom-webhook-service/issues/94)).
 Don't add them speculatively.
 

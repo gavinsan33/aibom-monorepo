@@ -14,3 +14,12 @@ import type * as SDK from '@openshift-console/dynamic-plugin-sdk';
 export const ListPageHeader: typeof SDK.ListPageHeader = ({ title }) => <h1>{title}</h1>;
 
 export const DocumentTitle: typeof SDK.DocumentTitle = () => null;
+
+/** Renders its query/namespace props as visible text so tests can assert the right PromQL/scoping reached the component, without needing the real chart-rendering implementation. */
+export const QueryBrowser: typeof SDK.QueryBrowser = ({ queries, namespace }) => (
+  <div data-test="query-browser" data-namespace={namespace}>
+    {queries.map((query) => (
+      <div key={query}>{query}</div>
+    ))}
+  </div>
+);
