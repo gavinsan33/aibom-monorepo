@@ -2,7 +2,7 @@
 plugin:
   name: "aibom-console-plugin"
   description: "AIBOM Console Plugin"
-  image: ""
+  image: "quay.io/gsanders/aibom-console-plugin:latest"
   imagePullPolicy: Always
   imagePullSecrets: []
   replicas: 2
