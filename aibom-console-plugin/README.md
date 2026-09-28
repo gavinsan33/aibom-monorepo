@@ -99,49 +99,72 @@ changes.
 
 ## Deployment
 
-### Quick start: Install from Quay
+### Quick start: Deploy from Quay
 
-#### Using `values_file`
+The Helm chart is published to Quay and auto-built on every push to main.
 
-To specify a values file when pushing the chart, use the `values_file` parameter with the `chart-push` target in `justfile`. For example:
+First, log in to your cluster:
 
 ```sh
-just chart-push --repo=<repo> values_file=path/to/values.yaml
+oc login
 ```
 
-The Helm chart is published to Quay and auto-built on every push to main:
+Then deploy using the just recipe:
+
+```sh
+just deploy
+```
+
+This pulls the latest chart from `oci://quay.io/gsanders/aibom-console-plugin` and
+installs it to the `aibom-console-plugin` namespace.
+
+To pin a specific immutable version (for rollback safety):
+
+```sh
+just deploy --version=0.1.0-abc1234
+```
+
+To deploy from a different Quay org/repo:
+
+```sh
+just deploy --repo=quay.io/your-org
+```
+
+To pass custom Helm values:
+
+```sh
+just deploy --values=values-prod.yaml
+```
+
+### Alternative: Manual Helm commands
+
+If you prefer to run Helm directly without just:
 
 ```sh
 helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
   -n aibom-console-plugin --create-namespace
 ```
 
-To pin a specific chart version (immutable tag):
+### Custom container images
 
-```sh
-helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
-  -n aibom-console-plugin --create-namespace \
-  --version 0.1.0-abc1234
-```
-
-To use a different Quay org/repo:
-
-```sh
-helm upgrade -i aibom-console-plugin oci://quay.io/your-org/aibom-console-plugin \
-  -n aibom-console-plugin --create-namespace
-```
-
-### Alternative: Build and push your own image
-
-If you want to customize the plugin, build and push an image, then install:
+If you want to customize the plugin, build and push your own image:
 
 ```sh
 docker build -t quay.io/my-repository/aibom-console-plugin:latest .
 docker push quay.io/my-repository/aibom-console-plugin:latest
+```
 
-helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin \
-  -n aibom-console-plugin --create-namespace \
-  --set plugin.image=quay.io/my-repository/aibom-console-plugin:latest
+Then deploy with a custom `plugin.image` setting (add to values.yaml or pass inline):
+
+```sh
+just deploy --values=custom-values.yaml
+```
+
+Where `custom-values.yaml` contains:
+
+```yaml
+plugin:
+  image: quay.io/my-repository/aibom-console-plugin:latest
 ```
 
 The chart's `patch-consoles` Job (enabled by default,
