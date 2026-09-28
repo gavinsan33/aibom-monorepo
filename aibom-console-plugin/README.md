@@ -64,6 +64,40 @@ same field mapping, same case-insensitive exact-match semantics, same
 missing-metric/unparseable-date edge cases. Keep the two in sync if either
 changes.
 
+## Building & Pushing
+
+### Container image
+
+Build the image locally:
+
+```sh
+just docker-build
+```
+
+Push to Quay (requires `docker login quay.io`):
+
+```sh
+just docker-push
+```
+
+Or build, push, and deploy in one go:
+
+```sh
+just deploy-local
+```
+
+Images auto-build on every push to main via GitHub Actions, pushing both `:latest` (mutable) and `:${commit_sha}` (immutable) tags to `quay.io/gsanders/aibom-console-plugin`.
+
+### Helm chart
+
+Push the chart to Quay (requires `helm registry login quay.io`):
+
+```sh
+just chart-push
+```
+
+This publishes both a mutable version tag (e.g., `0.1.0`) and an immutable SHA-pinned tag (e.g., `0.1.0-abc1234`) for rollback safety.
+
 ## Deployment
 
 Log in to your cluster and deploy:
@@ -73,11 +107,11 @@ oc login
 just deploy
 ```
 
-This pulls the latest chart from `oci://quay.io/gsanders/aibom-console-plugin` and installs it to the `aibom-console-plugin` namespace.
+This pulls the latest chart and image from `quay.io/gsanders/aibom-console-plugin` and installs to the `aibom-console-plugin` namespace.
 
 ### Common options
 
-Pin a specific version for rollback safety:
+Pin a specific version:
 
 ```sh
 just deploy --version=0.1.0-abc1234
@@ -89,8 +123,6 @@ Deploy from a different Quay org or with custom values:
 just deploy --repo=quay.io/your-org --values=values-prod.yaml
 ```
 
-### Helm commands
-
 Or use Helm directly:
 
 ```sh
@@ -98,4 +130,4 @@ helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin
   -n aibom-console-plugin --create-namespace
 ```
 
-See `charts/openshift-console-plugin/values.yaml` for all configuration options (replicas, resources, image, feature flags, etc.).
+See `charts/openshift-console-plugin/values.yaml` for all configuration options.
