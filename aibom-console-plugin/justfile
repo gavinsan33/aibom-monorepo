@@ -46,8 +46,9 @@ _check-auth:
 # quay.io`) with push access to that repo.
 #
 # Defaults to the local working tree's short SHA, suffixed "-dirty" if there
-# are uncommitted changes.
-# Usage: just deploy-local [--repo=<repo>] [--version=<tag>] [--values=<file>]
+# are uncommitted changes. Pass --skip-patcher to disable the auto-patcher job
+# and avoid needing cluster-admin.
+# Usage: just deploy-local [--repo=<repo>] [--version=<tag>] [--values=<file>] [--skip-patcher]
 [group('deploy')]
 deploy-local *args: _check-auth
     #!/usr/bin/env bash
@@ -57,12 +58,14 @@ deploy-local *args: _check-auth
     repo="{{ default_repo }}"
     version=""
     values_file=""
+    skip_patcher=false
     for arg in {{ args }}; do
         case "$arg" in
             --repo=*) repo="${arg#--repo=}" ;;
             --version=*) version="${arg#--version=}" ;;
             --values=*) values_file="${arg#--values=}" ;;
-            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, or --values=<file>)" >&2; exit 1 ;;
+            --skip-patcher) skip_patcher=true ;;
+            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, or --skip-patcher)" >&2; exit 1 ;;
         esac
     done
     if [[ -z "$version" ]]; then
@@ -74,9 +77,13 @@ deploy-local *args: _check-auth
     "$engine" push "$img_ref"
     values_args=()
     [[ -n "$values_file" ]] && values_args=(-f "$values_file")
+    [[ "$skip_patcher" = true ]] && values_args+=(--set plugin.jobs.patchConsoles.enabled=false)
+    kube_as_user_args=()
+    [[ "$skip_patcher" = false ]] && kube_as_user_args=(--kube-as-user=system:admin)
     helm upgrade --install aibom-console-plugin "oci://$repo/aibom-console-plugin" \
         -n aibom-console-plugin --create-namespace \
         --set plugin.image="$img_ref" \
+        "${kube_as_user_args[@]}" \
         "${values_args[@]}"
 
 # Install/upgrade the console plugin chart from Quay. Works once images are
@@ -85,7 +92,12 @@ deploy-local *args: _check-auth
 # tag from quay.io/gsanders/aibom-console-plugin. Override the repo or version
 # to deploy a different source or pin to an immutable sha tag.
 #
-# Usage: just deploy [--repo=<repo>] [--version=<tag>] [--values=<file>]
+# By default, `just deploy` requires cluster-admin to create cluster-scoped
+# resources (ClusterRole/ClusterRoleBinding, ConsolePlugin). Pass --skip-patcher
+# to disable the auto-patcher job and avoid needing cluster-admin — a
+# cluster-admin must then manually register the plugin by editing Console CR.
+#
+# Usage: just deploy [--repo=<repo>] [--version=<tag>] [--values=<file>] [--skip-patcher]
 [group('deploy')]
 deploy *args: _check-auth
     #!/usr/bin/env bash
@@ -93,19 +105,25 @@ deploy *args: _check-auth
     repo="{{ default_repo }}"
     version="latest"
     values_file=""
+    skip_patcher=false
     for arg in {{ args }}; do
         case "$arg" in
             --repo=*) repo="${arg#--repo=}" ;;
             --version=*) version="${arg#--version=}" ;;
             --values=*) values_file="${arg#--values=}" ;;
-            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, or --values=<file>)" >&2; exit 1 ;;
+            --skip-patcher) skip_patcher=true ;;
+            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, or --skip-patcher)" >&2; exit 1 ;;
         esac
     done
     values_args=()
     [[ -n "$values_file" ]] && values_args=(-f "$values_file")
+    [[ "$skip_patcher" = true ]] && values_args+=(--set plugin.jobs.patchConsoles.enabled=false)
+    kube_as_user_args=()
+    [[ "$skip_patcher" = false ]] && kube_as_user_args=(--kube-as-user=system:admin)
     helm upgrade --install aibom-console-plugin "oci://$repo/aibom-console-plugin" \
         -n aibom-console-plugin --create-namespace \
         --version "$version" \
+        "${kube_as_user_args[@]}" \
         "${values_args[@]}"
 
 # --- Chart publishing --------------------------------------------------------
