@@ -16,9 +16,9 @@ import {
   INFERENCE_METRIC_LABELS,
   INFERENCE_METRIC_ORDER,
 } from '../../types/aibom';
-import { earliestPodStart } from '../../utils/executionMetadata';
 import { toFlexNumber } from '../../utils/flexible';
 import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
+import { getTelemetryWindow } from '../../utils/telemetryWindow';
 import Section from './Section';
 import TelemetryChart from './TelemetryChart';
 
@@ -37,15 +37,7 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const data = item.spec?.data;
   const namespace = item.metadata?.namespace;
-  const pods = data?.execution_metadata?.pods ?? [];
-  const podNames = pods.map((pod) => pod.pod_name).filter((name): name is string => Boolean(name));
-
-  const start = earliestPodStart(pods);
-  const end = item.spec?.collectedAt;
-  // If start_time lacks timezone indicator, assume UTC
-  const startMs = start ? Date.parse(start.endsWith('Z') ? start : start + 'Z') : NaN;
-  const endMs = end ? Date.parse(end) : NaN;
-  const hasWindow = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs;
+  const { podNames, startMs, endMs, hasWindow } = getTelemetryWindow(item);
 
   if (podNames.length === 0) {
     return <EmptyState titleText={t('No pod data available for telemetry')} headingLevel="h4" />;

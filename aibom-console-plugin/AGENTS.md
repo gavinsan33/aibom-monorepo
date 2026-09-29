@@ -64,6 +64,18 @@ inference charts gate on `inference.serving_engine === 'vllm'` -- matches
 the existing tables' own gating logic, so don't add hardware charts for a
 non-GPU workload just because pods exist.
 
+**Compare view Telemetry tab** (`src/components/compare/AIBOMCompareTelemetryTab.tsx`
++ `TelemetryCompareChart.tsx`): the one deliberate exception to the "no custom
+chart renderer" rule above. `QueryBrowser` can't do this: no series-color prop,
+one `namespace`/window per instance, absolute time axis -- and compared runs
+happened at different times, possibly in different namespaces. So each metric is
+one small inline-SVG overlay (no new dependency): each run's `promql.ts` query is
+fetched from the same tenancy proxy (`src/utils/prometheusRange.ts`, always with
+`namespace`), plotted against elapsed time since that run's own start, in the
+run's `runChartColor` (matches its `Label` in the tables). Same feature flag and
+hardware/vLLM gating as the detail tab (`getTelemetryWindow` is shared). Keep the
+detail tab on `QueryBrowser`.
+
 **Telemetry tab toggle**: the tab is enabled/disabled per deployment via
 Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
 `feature-flags.json` key in the plugin's ConfigMap, mounted over the
