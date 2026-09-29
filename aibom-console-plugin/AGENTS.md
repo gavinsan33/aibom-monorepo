@@ -53,7 +53,9 @@ tried and removed).
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
 windows, the `exported_pod` vs. `pod` label distinction for GPU vs.
 everything else) so live charts read the same series the AIBOM's own
-recorded stats came from. If those queries ever change upstream, update
+recorded stats came from. One deliberate deviation: per-container queries also
+exclude `container="aibom-dataset-sidecar"` (see `WORKLOAD_CONTAINERS`) so the
+webhook's sidecar doesn't show up as a series. If those queries ever change upstream, update
 `promql.ts` and its tests to match -- a drifted label silently produces an
 empty/wrong chart with no error. Time window is `earliestPodStart(pods)` to
 `spec.collectedAt`, cold start included (unlike the summary stats' trimmed

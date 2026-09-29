@@ -10,10 +10,10 @@ describe('buildHardwareQuery', () => {
   it('builds each hardware metric query verbatim for a single pod', () => {
     const pod = ['pod-a'];
     expect(buildHardwareQuery('cpu_usage', pod)).toBe(
-      'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!=""}[5m])',
+      'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])',
     );
     expect(buildHardwareQuery('memory_usage', pod)).toBe(
-      'container_memory_working_set_bytes{pod=~"pod-a", container!="POD", container!=""}',
+      'container_memory_working_set_bytes{pod=~"pod-a", container!="POD", container!="", container!="aibom-dataset-sidecar"}',
     );
     expect(buildHardwareQuery('network_receive', pod)).toBe(
       'rate(container_network_receive_bytes_total{pod=~"pod-a"}[5m])',
@@ -22,18 +22,18 @@ describe('buildHardwareQuery', () => {
       'rate(container_network_transmit_bytes_total{pod=~"pod-a"}[5m])',
     );
     expect(buildHardwareQuery('storage_read_throughput', pod)).toBe(
-      'sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"pod-a", container!="POD", container!=""}[5m])) or ' +
+      'sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"pod-a", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])) or ' +
         'sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"pod-a", container=""}[5m]))',
     );
     expect(buildHardwareQuery('storage_write_throughput', pod)).toBe(
-      'sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"pod-a", container!="POD", container!=""}[5m])) or ' +
+      'sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"pod-a", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])) or ' +
         'sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"pod-a", container=""}[5m]))',
     );
   });
 
   it('joins multiple pods into a regex alternation', () => {
     expect(buildHardwareQuery('cpu_usage', ['pod-a', 'pod-b'])).toBe(
-      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-b", container!="POD", container!=""}[5m])',
+      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-b", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])',
     );
   });
 
@@ -86,7 +86,7 @@ describe('buildVllmQuery', () => {
     const evil = 'x"} or up{a="';
     expect(buildVllmQuery('num_requests_running', [evil])).toBeUndefined();
     expect(buildHardwareQuery('cpu_usage', ['pod-a', evil, 'a|b', 'pod-c'])).toBe(
-      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-c", container!="POD", container!=""}[5m])',
+      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-c", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])',
     );
   });
 });

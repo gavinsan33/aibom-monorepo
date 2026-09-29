@@ -19,6 +19,16 @@ const validPodNames = (podNames: string[]): string[] =>
 /** `pod=~"a|b|c"`-style regex alternation. Names are pre-validated by `validPodNames` (no regex metacharacters besides `.`, which only over-matches within the same namespace), so no escaping is needed. */
 const podRegex = (podNames: string[]): string => podNames.join('|');
 
+/**
+ * Container matchers for per-container cAdvisor series: drops the pause
+ * container (`POD`), pod-level aggregates (`""`), and the webhook's
+ * `aibom-dataset-sidecar`, which isn't the workload and would otherwise add
+ * its own series to every chart. Deliberately stricter than `postprocess.py`'s
+ * queries (which don't exclude the sidecar). Pod-level series (network, and
+ * the storage fallback branch) carry no container label to filter on.
+ */
+const WORKLOAD_CONTAINERS = 'container!="POD", container!="", container!="aibom-dataset-sidecar"';
+
 type QueryBuilder = (podNames: string[]) => string;
 
 // gpu_utilization / gpu_memory_used / gpu_power are deliberately absent: DCGM
@@ -27,9 +37,9 @@ type QueryBuilder = (podNames: string[]) => string;
 // them. See CLAUDE.md's Telemetry tab GPU note.
 const HARDWARE_QUERY_BUILDERS: Partial<Record<string, QueryBuilder>> = {
   cpu_usage: (pods) =>
-    `rate(container_cpu_usage_seconds_total{pod=~"${podRegex(pods)}", container!="POD", container!=""}[5m])`,
+    `rate(container_cpu_usage_seconds_total{pod=~"${podRegex(pods)}", ${WORKLOAD_CONTAINERS}}[5m])`,
   memory_usage: (pods) =>
-    `container_memory_working_set_bytes{pod=~"${podRegex(pods)}", container!="POD", container!=""}`,
+    `container_memory_working_set_bytes{pod=~"${podRegex(pods)}", ${WORKLOAD_CONTAINERS}}`,
   network_receive: (pods) =>
     `rate(container_network_receive_bytes_total{pod=~"${podRegex(pods)}"}[5m])`,
   network_transmit: (pods) =>
@@ -37,14 +47,14 @@ const HARDWARE_QUERY_BUILDERS: Partial<Record<string, QueryBuilder>> = {
   storage_read_throughput: (pods) => {
     const p = podRegex(pods);
     return (
-      `sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"${p}", container!="POD", container!=""}[5m])) or ` +
+      `sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"${p}", ${WORKLOAD_CONTAINERS}}[5m])) or ` +
       `sum by (pod) (rate(container_fs_reads_bytes_total{pod=~"${p}", container=""}[5m]))`
     );
   },
   storage_write_throughput: (pods) => {
     const p = podRegex(pods);
     return (
-      `sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"${p}", container!="POD", container!=""}[5m])) or ` +
+      `sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"${p}", ${WORKLOAD_CONTAINERS}}[5m])) or ` +
       `sum by (pod) (rate(container_fs_writes_bytes_total{pod=~"${p}", container=""}[5m]))`
     );
   },
