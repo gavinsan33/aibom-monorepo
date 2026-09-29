@@ -2,150 +2,126 @@ import type { FC } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bullseye, Content, Spinner } from '@patternfly/react-core';
-import { formatAxisValue, linePath, niceMax } from '../../utils/chartGeometry';
-import { formatDuration } from '../../utils/executionMetadata';
+import type { StoredMetric } from '../../types/telemetrySeries';
+import { linesFromLive, linesFromStored } from '../../utils/compareLines';
+import type { ChartLine } from '../../utils/compareLines';
 import { fetchRange } from '../../utils/prometheusRange';
 import type { RangeSeries } from '../../utils/prometheusRange';
-import { runChartColor } from '../../utils/runColors';
+import TelemetryLineChart from './TelemetryLineChart';
 
-export interface CompareChartRun {
+interface RunBase {
   name: string;
   /** Index into the compared list, so color matches the tables' `Label`s. */
   colorIndex: number;
+}
+
+/** Series stored with the AIBOM (survives Prometheus retention). */
+export interface StoredChartRun extends RunBase {
+  kind: 'stored';
+  metric: StoredMetric;
+  /** Unix seconds; x is measured from here. */
+  windowStart: number;
+}
+
+/** Fallback for AIBOMs without stored series: query the tenancy proxy now. */
+export interface LiveChartRun extends RunBase {
+  kind: 'live';
+  metricKey: string;
   query: string;
   namespace: string;
   startMs: number;
   endMs: number;
 }
 
+export type CompareChartRun = StoredChartRun | LiveChartRun;
+
 interface TelemetryCompareChartProps {
+  title: string;
   runs: CompareChartRun[];
-  units?: string;
+  unit?: string;
+  /** Draw each run's pods/GPUs individually instead of one aggregate line. */
+  expanded: boolean;
 }
 
-const WIDTH = 600;
-const HEIGHT = 240;
-const PAD = { top: 10, right: 12, bottom: 28, left: 64 };
-const Y_TICKS = 4;
-const X_TICKS = 5;
-const TEXT_FILL = 'var(--pf-t--global--text--color--subtle)';
-const GRID_STROKE = 'var(--pf-t--global--border--color--default)';
-
 /**
- * One overlaid line chart of the same metric across runs. Runs happened at
- * different times (and possibly in different namespaces), so the x-axis is
- * elapsed time since each run's own start and each run is fetched with its
- * own namespace/window through the tenancy proxy. All of a run's series
- * (pods/containers) share that run's color.
+ * One metric across runs. Stored runs draw immediately; live runs are
+ * fetched first. Runs happened at different times (and maybe namespaces), so
+ * each line is plotted against elapsed time since its own start.
  */
-const TelemetryCompareChart: FC<TelemetryCompareChartProps> = ({ runs, units }) => {
+const TelemetryCompareChart: FC<TelemetryCompareChartProps> = ({ title, runs, unit, expanded }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
-  // Outcome tagged with the runs it was fetched for; anything not matching the
-  // current `runsKey` counts as still loading.
+  const liveRuns = useMemo(
+    () => runs.filter((run): run is LiveChartRun => run.kind === 'live'),
+    [runs],
+  );
+
+  // Outcome tagged with the live runs it was fetched for; anything not
+  // matching the current key counts as still loading. Keyed on content because
+  // the parent rebuilds `runs` on every resource-watch update.
+  const liveKey = JSON.stringify(liveRuns);
   const [outcome, setOutcome] = useState<
     { key: string; results?: RangeSeries[][]; error?: string } | undefined
   >();
 
-  // The parent rebuilds `runs` on every resource-watch update; key the fetch on
-  // content so an unchanged chart doesn't re-query Prometheus.
-  const runsKey = JSON.stringify(runs);
-
   useEffect(() => {
+    if (liveRuns.length === 0) return undefined;
     let cancelled = false;
-    const fetched = JSON.parse(runsKey) as CompareChartRun[];
+    const fetched = JSON.parse(liveKey) as LiveChartRun[];
     Promise.all(fetched.map((r) => fetchRange(r.query, r.namespace, r.startMs, r.endMs)))
-      .then((res) => {
-        if (!cancelled) setOutcome({ key: runsKey, results: res });
+      .then((results) => {
+        if (!cancelled) setOutcome({ key: liveKey, results });
       })
       .catch((e: unknown) => {
         if (!cancelled) {
-          setOutcome({ key: runsKey, error: e instanceof Error ? e.message : String(e) });
+          setOutcome({ key: liveKey, error: e instanceof Error ? e.message : String(e) });
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [runsKey]);
+    // `liveRuns` is derived from `liveKey`'s content; the key is the real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveKey]);
 
-  const current = outcome?.key === runsKey ? outcome : undefined;
-  const results = current?.results;
-  const error = current?.error;
+  const current = outcome?.key === liveKey ? outcome : undefined;
+  const loading = liveRuns.length > 0 && !current;
 
-  const model = useMemo(() => {
-    if (!results) return undefined;
-    const points = results.flatMap((series) => series.flatMap((s) => s.points));
-    if (points.length === 0) return undefined;
-    const xMax = Math.max(...runs.map((r) => (r.endMs - r.startMs) / 1000));
-    const yMax = niceMax(Math.max(...points.map((p) => p.y)));
-    const xScale = (x: number) => PAD.left + (x / xMax) * (WIDTH - PAD.left - PAD.right);
-    const yScale = (y: number) =>
-      HEIGHT - PAD.bottom - (y / yMax) * (HEIGHT - PAD.top - PAD.bottom);
-    return { xMax, yMax, xScale, yScale };
-  }, [results, runs]);
+  const lines = useMemo<ChartLine[]>(() => {
+    let liveIndex = 0;
+    return runs.flatMap((run) => {
+      if (run.kind === 'stored') {
+        return linesFromStored(run.metric, run.windowStart, expanded, run.name, run.colorIndex);
+      }
+      const series = current?.results?.[liveIndex++];
+      return series ? linesFromLive(series, run.metricKey, expanded, run.name, run.colorIndex) : [];
+    });
+  }, [runs, current, expanded]);
 
-  if (error) {
-    return <Content component="p">{t('Unable to load telemetry: {{error}}', { error })}</Content>;
+  if (current?.error && lines.length === 0) {
+    return (
+      <Content component="p">
+        {t('Unable to load telemetry: {{error}}', { error: current.error })}
+      </Content>
+    );
   }
-  if (!results) {
+  if (loading) {
     return (
       <Bullseye>
         <Spinner size="lg" aria-label={t('Loading telemetry')} />
       </Bullseye>
     );
   }
-  if (!model) {
+  if (lines.every((line) => line.points.length === 0)) {
     return <Content component="p">{t('No data returned for this metric')}</Content>;
   }
 
-  const { xMax, yMax, xScale, yScale } = model;
   return (
-    <svg
-      viewBox={['0', '0', WIDTH, HEIGHT].join(' ')}
-      width="100%"
-      role="img"
-      aria-label={runs.map((r) => r.name).join(', ')}
-    >
-      {Array.from({ length: Y_TICKS + 1 }, (_, i) => {
-        const value = (yMax * i) / Y_TICKS;
-        const y = yScale(value);
-        return (
-          <g key={`y${String(i)}`}>
-            <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y} y2={y} stroke={GRID_STROKE} />
-            <text x={PAD.left - 6} y={y + 4} textAnchor="end" fontSize="11" fill={TEXT_FILL}>
-              {formatAxisValue(value, units)}
-            </text>
-          </g>
-        );
-      })}
-      {Array.from({ length: X_TICKS + 1 }, (_, i) => {
-        const seconds = (xMax * i) / X_TICKS;
-        return (
-          <text
-            key={`x${String(i)}`}
-            x={xScale(seconds)}
-            y={HEIGHT - 8}
-            textAnchor="middle"
-            fontSize="11"
-            fill={TEXT_FILL}
-          >
-            {formatDuration(seconds)}
-          </text>
-        );
-      })}
-      {runs.map((run, runIndex) =>
-        results[runIndex].map((series, seriesIndex) => (
-          <path
-            key={`${String(run.colorIndex)}-${String(seriesIndex)}`}
-            role="graphics-symbol"
-            aria-label={run.name}
-            d={linePath(series.points, xScale, yScale)}
-            fill="none"
-            stroke={runChartColor(run.colorIndex)}
-            strokeWidth="1.5"
-          />
-        )),
-      )}
-    </svg>
+    <TelemetryLineChart
+      title={title}
+      lines={lines}
+      legend={runs.map(({ name, colorIndex }) => ({ name, colorIndex }))}
+      unit={unit}
+    />
   );
 };
 

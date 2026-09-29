@@ -1,4 +1,5 @@
 import type { K8sResourceCommon } from '@openshift-console/dynamic-plugin-sdk';
+import type { TelemetrySeriesRef } from './telemetrySeries';
 
 /**
  * The `aibom.io/v1alpha1` AIBOM custom resource, mirroring
@@ -32,6 +33,8 @@ export interface AIBOMData {
     declared_via?: string;
     dirty?: boolean;
   };
+  /** Optional; absent on AIBOMs created before the webhook stored series (see `TelemetrySeriesRef`). */
+  telemetry_series_ref?: TelemetrySeriesRef;
   execution_metadata?: {
     job_id?: string;
     namespace?: string;

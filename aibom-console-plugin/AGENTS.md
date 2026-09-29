@@ -46,8 +46,8 @@ mirror and you'd be inventing presentation, not porting it.
 `AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
 charts, one per metric, via the console SDK's `QueryBrowser` component
 (`fixedEndTime`/`timespan` pin it to the run's window) -- **not** a custom
-chart renderer or a new charting library dependency (a recharts version was
-tried and removed).
+chart renderer (a recharts version was tried and removed). The Compare view is
+the exception; see its section below.
 `src/utils/promql.ts` builds the PromQL, mirroring
 `aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
@@ -66,17 +66,32 @@ inference charts gate on `inference.serving_engine === 'vllm'` -- matches
 the existing tables' own gating logic, so don't add hardware charts for a
 non-GPU workload just because pods exist.
 
-**Compare view Telemetry tab** (`src/components/compare/AIBOMCompareTelemetryTab.tsx`
-+ `TelemetryCompareChart.tsx`): the one deliberate exception to the "no custom
-chart renderer" rule above. `QueryBrowser` can't do this: no series-color prop,
-one `namespace`/window per instance, absolute time axis -- and compared runs
-happened at different times, possibly in different namespaces. So each metric is
-one small inline-SVG overlay (no new dependency): each run's `promql.ts` query is
-fetched from the same tenancy proxy (`src/utils/prometheusRange.ts`, always with
-`namespace`), plotted against elapsed time since that run's own start, in the
-run's `runChartColor` (matches its `Label` in the tables). Same feature flag and
-hardware/vLLM gating as the detail tab (`getTelemetryWindow` is shared). Keep the
-detail tab on `QueryBrowser`.
+**Compare view Telemetry tab** (`src/components/compare/AIBOMCompareTelemetryTab.tsx`,
+`TelemetryCompareChart.tsx`, `TelemetryLineChart.tsx`): the exception to the
+`QueryBrowser`-only rule above, and the reason `@patternfly/react-charts` (Victory;
+bundled -- the console doesn't share it -- ~313 KiB min, one lazy chunk) is a
+dependency. `QueryBrowser` can't do this: no series-color prop, one
+`namespace`/window per instance, absolute time axis, and it can't plot data that
+isn't in Prometheus. Compared runs happened at different times, possibly in
+different namespaces, so every line is plotted against elapsed time since that
+run's own start, in the run's `runChartColor` (matches its `Label` in the tables).
+Each run is one aggregate line by default; the "Show individual pods and GPUs"
+switch expands to per-series lines (same color, dashed variants). Data sources,
+per run: (1) **stored series** -- `spec.data.telemetry_series_ref` points at a
+separate `aibom.io/v1alpha1` `AIBOMTelemetry` object (payload in
+`spec.seriesJson`) written by
+`aibom-webhook-service` at collection time, deliberately not inline in the AIBOM
+so the list page's all-AIBOMs watch never carries it, and not a ConfigMap so it
+doesn't clutter namespaces. Schema: `src/types/telemetrySeries.ts`; source of
+truth is that repo's `CLAUDE.md` "Telemetry Time Series". The object is found by
+the reference's own `name` (it can't match the AIBOM's `generateName`d name),
+read via `useK8sWatchResources` with the viewer's own token, and digest-checked
+against the reference's sha256 of the payload string in
+`src/utils/storedTelemetry.ts`; it survives Prometheus's ~15 day retention. (2) **live fallback** for AIBOMs without a reference: the
+`promql.ts` query through the tenancy proxy (`src/utils/prometheusRange.ts`,
+always with `namespace`), aggregated client-side to match the webhook's rule
+(`liveAggregation`). Same feature flag as the detail tab. The detail tab is still
+live-only `QueryBrowser`.
 
 **Telemetry tab toggle**: the tab is enabled/disabled per deployment via
 Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
@@ -116,8 +131,12 @@ queries return empty -- confirmed with a live query from a pod in a workload
 namespace (cAdvisor series returned data, `count(DCGM_FI_DEV_GPU_UTIL)` did
 not). The only fixes are granting viewers access to the GPU operator namespace
 or `cluster-monitoring-view`, both deliberately rejected. So `promql.ts` has no
-GPU builders and the tab shows a note pointing at the recorded stats instead.
-Don't re-add them without changing that RBAC decision.
+GPU builders and the detail tab shows a note pointing at the recorded stats instead.
+Don't re-add live GPU queries without changing that RBAC decision. The exception:
+the webhook queries DCGM itself with its own access and stores GPU series
+(`gpu_utilization`, `gpu_memory_used`, `gpu_power`, per-GPU under `series`), so
+the Compare tab charts them from the stored `AIBOMTelemetry` object. Viewers read
+it through the webhook chart's `aibom-view` grant, not through this plugin.
 
 **Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
 mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
