@@ -1,7 +1,7 @@
 import type { FC } from 'react';
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   DocumentTitle,
   isAllNamespacesKey,
@@ -21,8 +21,10 @@ import {
   Spinner,
 } from '@patternfly/react-core';
 import type { AIBOMResource, SortKey } from '../types/aibom';
+import { SORTABLE_METRICS } from '../types/aibom';
 import type { AIBOMFilter } from '../utils/filter';
 import { applyFilter } from '../utils/filter';
+import { parseListState, serializeListState } from '../utils/listUrlState';
 import { sortItems } from '../utils/sort';
 import AIBOMFilterToolbar from './AIBOMFilterToolbar';
 import AIBOMListTable from './AIBOMListTable';
@@ -33,9 +35,27 @@ const AIBOMListPage: FC = () => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const navigate = useNavigate();
   const [activeNamespace] = useActiveNamespace();
-  const [filter, setFilter] = useState<AIBOMFilter>({});
-  const [sortKey, setSortKey] = useState<SortKey>('age');
-  const [ascending, setAscending] = useState(false);
+  // Filter/sort live in the URL (not component state) so they survive
+  // navigating to a detail page and back.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { filter, sortKey, ascending } = useMemo(
+    () => parseListState(searchParams, Object.keys(SORTABLE_METRICS).concat('age')),
+    [searchParams],
+  );
+  const updateListState = useCallback(
+    (next: Partial<{ filter: AIBOMFilter; sortKey: SortKey; ascending: boolean }>) => {
+      setSearchParams((prev) => serializeListState({ filter, sortKey, ascending, ...next }, prev), {
+        replace: true,
+      });
+    },
+    [filter, sortKey, ascending, setSearchParams],
+  );
+  const setFilter = (next: AIBOMFilter) => {
+    updateListState({ filter: next });
+  };
+  const setSort = (key: SortKey, asc: boolean) => {
+    updateListState({ sortKey: key, ascending: asc });
+  };
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const onToggleSelect = (key: string) => {
@@ -88,10 +108,7 @@ const AIBOMListPage: FC = () => {
               onFilterChange={setFilter}
               sortKey={sortKey}
               ascending={ascending}
-              onSortChange={(key, asc) => {
-                setSortKey(key);
-                setAscending(asc);
-              }}
+              onSortChange={setSort}
             />
             {selected.size > 0 && (
               <Flex
@@ -125,10 +142,7 @@ const AIBOMListPage: FC = () => {
                 items={visibleItems}
                 sortKey={sortKey}
                 ascending={ascending}
-                onSort={(key, asc) => {
-                  setSortKey(key);
-                  setAscending(asc);
-                }}
+                onSort={setSort}
                 selected={selected}
                 onToggleSelect={onToggleSelect}
               />
