@@ -38,8 +38,6 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const startMs = start ? Date.parse(start) : NaN;
   const endMs = end ? Date.parse(end) : NaN;
   const hasWindow = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs;
-  const fixedEndTime = hasWindow ? endMs : undefined;
-  const timespan = hasWindow ? endMs - startMs : undefined;
 
   if (podNames.length === 0) {
     return <EmptyState titleText={t('No pod data available for telemetry')} headingLevel="h4" />;
@@ -62,7 +60,7 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                   <Card>
                     <CardTitle>{HARDWARE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
-                      {hasWindow ? (
+                      {hasWindow && namespace ? (
                         <TelemetryChart
                           query={query}
                           namespace={namespace}
@@ -98,7 +96,7 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                   <Card>
                     <CardTitle>{INFERENCE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
-                      {hasWindow ? (
+                      {hasWindow && namespace ? (
                         <TelemetryChart
                           query={query}
                           namespace={namespace}

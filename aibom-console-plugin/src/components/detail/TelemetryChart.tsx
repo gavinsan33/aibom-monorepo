@@ -111,8 +111,10 @@ const TelemetryChart: FC<TelemetryChartProps> = ({
         />
         <YAxis label={{ value: unit || 'value', angle: -90, position: 'insideLeft' }} />
         <Tooltip
-          labelFormatter={(ts) => new Date(ts).toLocaleString()}
-          formatter={(value) => [value?.toFixed(2), '']}
+          labelFormatter={(ts: any) => (typeof ts === 'number' ? new Date(ts).toLocaleString() : '')}
+          formatter={(value: any) =>
+            typeof value === 'number' ? [value.toFixed(2), ''] : [value, '']
+          }
         />
         {showLegend && <Legend />}
         {metricKeys.map((key, i) => (
