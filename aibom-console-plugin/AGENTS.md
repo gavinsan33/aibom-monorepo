@@ -89,6 +89,17 @@ access** -- it's already covered by `aibom-view`'s `view` aggregation. If
 you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
 switch back to the admin-only endpoint and reintroduce this requirement.
 
+**No live GPU charts (verified)**: DCGM series (`DCGM_FI_DEV_*`) are scraped
+from the dcgm-exporter pod, so their `namespace` label is `nvidia-gpu-operator`
+(the workload's own pod/namespace land in `exported_pod`/`exported_namespace`).
+The tenancy proxy injects `namespace=<workload-ns>` into every query, so DCGM
+queries return empty -- confirmed with a live query from a pod in a workload
+namespace (cAdvisor series returned data, `count(DCGM_FI_DEV_GPU_UTIL)` did
+not). The only fixes are granting viewers access to the GPU operator namespace
+or `cluster-monitoring-view`, both deliberately rejected. So `promql.ts` has no
+GPU builders and the tab shows a note pointing at the recorded stats instead.
+Don't re-add them without changing that RBAC decision.
+
 **Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
 mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
 *both* the admin and tenancy proxy configs at the same single public Thanos

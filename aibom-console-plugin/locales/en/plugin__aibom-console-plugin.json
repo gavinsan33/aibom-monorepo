@@ -63,6 +63,7 @@
   "Kernel version": "Kernel version",
   "Learning rate": "Learning rate",
   "Limit": "Limit",
+  "Live GPU charts are unavailable: GPU metrics are scraped from the GPU operator namespace, which the namespace-scoped metrics proxy cannot query. Recorded GPU statistics are shown in the Hardware Performance section of the Overview tab.": "Live GPU charts are unavailable: GPU metrics are scraped from the GPU operator namespace, which the namespace-scoped metrics proxy cannot query. Recorded GPU statistics are shown in the Hardware Performance section of the Overview tab.",
   "Loading AIBOM": "Loading AIBOM",
   "Loading AIBOMs": "Loading AIBOMs",
   "LoRA rank / alpha": "LoRA rank / alpha",

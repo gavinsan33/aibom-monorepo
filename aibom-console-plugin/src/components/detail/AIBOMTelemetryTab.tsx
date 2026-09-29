@@ -52,6 +52,13 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
       <Section title={t('Hardware Telemetry')}>
         {gpuCount > 0 ? (
           <Grid hasGutter>
+            <GridItem span={12}>
+              <Content component="p">
+                {t(
+                  'Live GPU charts are unavailable: GPU metrics are scraped from the GPU operator namespace, which the namespace-scoped metrics proxy cannot query. Recorded GPU statistics are shown in the Hardware Performance section of the Overview tab.',
+                )}
+              </Content>
+            </GridItem>
             {HARDWARE_METRIC_ORDER.map((metricKey) => {
               const query = buildHardwareQuery(metricKey, podNames);
               if (!query) return null;

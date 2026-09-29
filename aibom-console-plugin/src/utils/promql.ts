@@ -12,13 +12,11 @@ const podRegex = (podNames: string[]): string => podNames.join('|');
 
 type QueryBuilder = (podNames: string[]) => string;
 
+// gpu_utilization / gpu_memory_used / gpu_power are deliberately absent: DCGM
+// series carry the exporter pod's `namespace` (nvidia-gpu-operator), so the
+// tenancy proxy's injected `namespace=<workload-ns>` matcher never matches
+// them. See CLAUDE.md's Telemetry tab GPU note.
 const HARDWARE_QUERY_BUILDERS: Partial<Record<string, QueryBuilder>> = {
-  gpu_utilization: (pods) =>
-    `avg_over_time(DCGM_FI_DEV_GPU_UTIL{exported_pod=~"${podRegex(pods)}"}[5m])`,
-  gpu_memory_used: (pods) =>
-    `avg_over_time(DCGM_FI_DEV_FB_USED{exported_pod=~"${podRegex(pods)}"}[5m])`,
-  gpu_power: (pods) =>
-    `avg_over_time(DCGM_FI_DEV_POWER_USAGE{exported_pod=~"${podRegex(pods)}"}[5m])`,
   cpu_usage: (pods) =>
     `rate(container_cpu_usage_seconds_total{pod=~"${podRegex(pods)}", container!="POD", container!=""}[5m])`,
   memory_usage: (pods) =>
