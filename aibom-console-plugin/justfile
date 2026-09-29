@@ -190,7 +190,7 @@ chart-push *args:
     trap 'rm -rf "$pkg_dir"' EXIT
     sha="$(git rev-parse --short HEAD)"
     git diff --quiet HEAD || sha="${sha}-dirty"
-    chart_dir="openshift-console-plugin"
+    chart_dir="aibom-console-plugin"
     chart_name="$(grep '^name:' "charts/$chart_dir/Chart.yaml" | awk '{print $2}')"
     base_version="$(grep '^version:' "charts/$chart_dir/Chart.yaml" | awk '{print $2}')"
     pinned_version="${base_version}-${sha}"
