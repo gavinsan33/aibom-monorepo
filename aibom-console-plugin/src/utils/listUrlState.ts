@@ -56,6 +56,24 @@ export function parseListState(
   };
 }
 
+const SELECTED_PARAM = 'selected';
+
+/** Checked rows (`namespace/name` keys) from the `selected` param; kept out of `ListUrlState` so filter/sort updates leave it untouched. */
+export function parseSelected(params: URLSearchParams): Set<string> {
+  return new Set((params.get(SELECTED_PARAM) ?? '').split(',').filter(Boolean));
+}
+
+/** Writes the checked rows onto `base`, dropping the param when empty. */
+export function serializeSelected(selected: Set<string>, base?: URLSearchParams): URLSearchParams {
+  const params = new URLSearchParams(base);
+  if (selected.size > 0) {
+    params.set(SELECTED_PARAM, Array.from(selected).join(','));
+  } else {
+    params.delete(SELECTED_PARAM);
+  }
+  return params;
+}
+
 /** Writes state onto `base`, keeping unrelated params and omitting defaults. */
 export function serializeListState(state: ListUrlState, base?: URLSearchParams): URLSearchParams {
   const params = new URLSearchParams(base);

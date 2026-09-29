@@ -1,4 +1,9 @@
-import { parseListState, serializeListState } from './listUrlState';
+import {
+  parseListState,
+  parseSelected,
+  serializeListState,
+  serializeSelected,
+} from './listUrlState';
 
 const KEYS = ['age', 'cpu-usage'];
 
@@ -35,6 +40,17 @@ describe('listUrlState', () => {
     ]) {
       expect(parseListState(serializeListState(state), KEYS)).toEqual(state);
     }
+  });
+
+  it('round-trips checked rows without disturbing filter/sort updates', () => {
+    const withSelection = serializeSelected(new Set(['ns/a', 'ns/b']));
+    expect(parseSelected(withSelection)).toEqual(new Set(['ns/a', 'ns/b']));
+    const afterFilter = serializeListState(
+      { filter: { model: 'granite' }, sortKey: 'age', ascending: true },
+      withSelection,
+    );
+    expect(parseSelected(afterFilter)).toEqual(new Set(['ns/a', 'ns/b']));
+    expect(serializeSelected(new Set(), afterFilter).has('selected')).toBe(false);
   });
 
   it('falls back to defaults for an unknown sort key', () => {

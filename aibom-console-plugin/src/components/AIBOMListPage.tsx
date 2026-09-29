@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
@@ -24,7 +24,12 @@ import type { AIBOMResource, SortKey } from '../types/aibom';
 import { SORTABLE_METRICS } from '../types/aibom';
 import type { AIBOMFilter } from '../utils/filter';
 import { applyFilter } from '../utils/filter';
-import { parseListState, serializeListState } from '../utils/listUrlState';
+import {
+  parseListState,
+  parseSelected,
+  serializeListState,
+  serializeSelected,
+} from '../utils/listUrlState';
 import { sortItems } from '../utils/sort';
 import AIBOMFilterToolbar from './AIBOMFilterToolbar';
 import AIBOMListTable from './AIBOMListTable';
@@ -56,18 +61,21 @@ const AIBOMListPage: FC = () => {
   const setSort = (key: SortKey, asc: boolean) => {
     updateListState({ sortKey: key, ascending: asc });
   };
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Checked rows also live in the URL, so they survive the Compare page and
+  // detail pages (browser back) just like filter/sort.
+  const selected = useMemo(() => parseSelected(searchParams), [searchParams]);
+  const setSelected = (next: Set<string>) => {
+    setSearchParams((prev) => serializeSelected(next, prev), { replace: true });
+  };
 
   const onToggleSelect = (key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
+    const next = new Set(selected);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setSelected(next);
   };
 
   const onCompare = () => {
