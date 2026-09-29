@@ -130,4 +130,4 @@ helm upgrade -i aibom-console-plugin oci://quay.io/gsanders/aibom-console-plugin
   -n aibom-console-plugin --create-namespace
 ```
 
-See `charts/openshift-console-plugin/values.yaml` for all configuration options.
+See `charts/aibom-console-plugin/values.yaml` for all configuration options.
