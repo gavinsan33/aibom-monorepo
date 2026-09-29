@@ -35,7 +35,8 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
 
   const start = earliestPodStart(pods);
   const end = item.spec?.collectedAt;
-  const startMs = start ? Date.parse(start) : NaN;
+  // If start_time lacks timezone indicator, assume UTC
+  const startMs = start ? Date.parse(start.endsWith('Z') ? start : start + 'Z') : NaN;
   const endMs = end ? Date.parse(end) : NaN;
   const hasWindow = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs;
 
