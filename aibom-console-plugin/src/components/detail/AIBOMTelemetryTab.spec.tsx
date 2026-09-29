@@ -36,11 +36,15 @@ describe('AIBOMTelemetryTab', () => {
     expect(screen.queryByText('GPU Utilization')).not.toBeInTheDocument();
   });
 
-  it('renders one chart per hardware metric, scoped to the pod, when a GPU is present', () => {
+  it('renders non-GPU hardware charts plus an explanatory note when a GPU is present', () => {
     render(<AIBOMTelemetryTab item={withPods({ environment: { gpu_count: 1 } })} />);
-    expect(screen.getByText('GPU Utilization')).toBeInTheDocument();
+    expect(screen.getByText(/Live GPU charts are unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText('GPU Utilization')).not.toBeInTheDocument();
+    expect(screen.getByText('CPU Usage')).toBeInTheDocument();
     expect(
-      screen.getByText('avg_over_time(DCGM_FI_DEV_GPU_UTIL{exported_pod=~"pod-a"}[5m])'),
+      screen.getByText(
+        'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!=""}[5m])',
+      ),
     ).toBeInTheDocument();
   });
 

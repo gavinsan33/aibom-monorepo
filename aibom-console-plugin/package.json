@@ -87,8 +87,5 @@
       "@console/pluginAPI": ">=4.22.0-0"
     }
   },
-  "packageManager": "yarn@4.18.0",
-  "dependencies": {
-    "recharts": "^3.10.1"
-  }
+  "packageManager": "yarn@4.18.0"
 }

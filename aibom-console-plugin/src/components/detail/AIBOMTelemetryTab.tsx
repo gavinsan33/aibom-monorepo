@@ -1,5 +1,6 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
+import { QueryBrowser } from '@openshift-console/dynamic-plugin-sdk';
 import {
   Card,
   CardBody,
@@ -20,7 +21,13 @@ import { earliestPodStart } from '../../utils/executionMetadata';
 import { toFlexNumber } from '../../utils/flexible';
 import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
 import Section from './Section';
-import TelemetryChart from './TelemetryChart';
+
+/** Recorded AIBOM unit -> the `units` value console's QueryBrowser humanizes by. */
+const QUERY_BROWSER_UNITS: Record<string, string> = {
+  bytes: 'bytes',
+  bytes_per_sec: 'Bps',
+  seconds: 'seconds',
+};
 
 interface AIBOMTelemetryTabProps {
   item: AIBOMResource;
@@ -39,6 +46,9 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const startMs = start ? Date.parse(start.endsWith('Z') ? start : start + 'Z') : NaN;
   const endMs = end ? Date.parse(end) : NaN;
   const hasWindow = !Number.isNaN(startMs) && !Number.isNaN(endMs) && endMs > startMs;
+  // Fixed window: [earliest pod start, collectedAt], not a sliding "last N" range.
+  const fixedEndTime = hasWindow ? endMs : undefined;
+  const timespan = hasWindow ? endMs - startMs : undefined;
 
   if (podNames.length === 0) {
     return <EmptyState titleText={t('No pod data available for telemetry')} headingLevel="h4" />;
@@ -69,12 +79,12 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                     <CardTitle>{HARDWARE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
                       {hasWindow && namespace ? (
-                        <TelemetryChart
-                          query={query}
+                        <QueryBrowser
+                          queries={[query]}
                           namespace={namespace}
-                          startTime={startMs}
-                          endTime={endMs}
-                          unit={unit}
+                          fixedEndTime={fixedEndTime}
+                          timespan={timespan}
+                          units={QUERY_BROWSER_UNITS[unit ?? ''] ?? unit}
                           showLegend={podNames.length > 1}
                         />
                       ) : (
@@ -105,12 +115,12 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                     <CardTitle>{INFERENCE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
                       {hasWindow && namespace ? (
-                        <TelemetryChart
-                          query={query}
+                        <QueryBrowser
+                          queries={[query]}
                           namespace={namespace}
-                          startTime={startMs}
-                          endTime={endMs}
-                          unit={unit}
+                          fixedEndTime={fixedEndTime}
+                          timespan={timespan}
+                          units={QUERY_BROWSER_UNITS[unit ?? ''] ?? unit}
                           showLegend={podNames.length > 1}
                         />
                       ) : (
