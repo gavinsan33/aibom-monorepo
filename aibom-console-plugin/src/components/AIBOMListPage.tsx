@@ -107,7 +107,6 @@ const AIBOMListPage: FC = () => {
               filter={filter}
               onFilterChange={setFilter}
               sortKey={sortKey}
-              ascending={ascending}
               onSortChange={setSort}
             />
             {selected.size > 0 && (

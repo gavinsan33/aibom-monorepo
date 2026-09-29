@@ -14,6 +14,7 @@ import {
 import type { AIBOMFilter } from '../utils/filter';
 import type { AIBOMResource, SortKey } from '../types/aibom';
 import { HARDWARE_METRIC_LABELS, SORTABLE_METRICS } from '../types/aibom';
+import { defaultAscending } from '../utils/listUrlState';
 import {
   getAdaptationMethod,
   getArchitecture,
@@ -55,7 +56,6 @@ interface AIBOMFilterToolbarProps {
   filter: AIBOMFilter;
   onFilterChange: (filter: AIBOMFilter) => void;
   sortKey: SortKey;
-  ascending: boolean;
   onSortChange: (sortKey: SortKey, ascending: boolean) => void;
 }
 
@@ -66,7 +66,6 @@ const AIBOMFilterToolbar: FC<AIBOMFilterToolbarProps> = ({
   filter,
   onFilterChange,
   sortKey,
-  ascending,
   onSortChange,
 }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
@@ -131,7 +130,7 @@ const AIBOMFilterToolbar: FC<AIBOMFilterToolbarProps> = ({
               aria-label={t('Sort by')}
               value={sortKey}
               onChange={(_event, value) => {
-                onSortChange(value as SortKey, ascending);
+                onSortChange(value as SortKey, defaultAscending(value as SortKey));
               }}
             >
               <FormSelectOption value="age" label={t('Collected at')} />
@@ -143,16 +142,6 @@ const AIBOMFilterToolbar: FC<AIBOMFilterToolbarProps> = ({
                 />
               ))}
             </FormSelect>
-          </ToolbarItem>
-          <ToolbarItem>
-            <Checkbox
-              id="aibom-sort-ascending"
-              label={t('Ascending')}
-              isChecked={ascending}
-              onChange={(_event, checked) => {
-                onSortChange(sortKey, checked);
-              }}
-            />
           </ToolbarItem>
         </ToolbarGroup>
       </ToolbarContent>
