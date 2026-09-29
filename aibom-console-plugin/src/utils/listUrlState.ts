@@ -29,6 +29,13 @@ export interface ListUrlState {
 
 export const DEFAULT_SORT_KEY: SortKey = 'age';
 
+/**
+ * Age sorts "ascending" = youngest (most recently collected) first, mirroring
+ * `oc-aibom`'s `SortByAge`, so newest-first is the default direction for age.
+ * Metrics default to highest-first (descending).
+ */
+export const defaultAscending = (key: SortKey): boolean => key === 'age';
+
 export function parseListState(
   params: URLSearchParams,
   validSortKeys: readonly string[],
@@ -40,10 +47,12 @@ export function parseListState(
   }
   if (params.get('driftOnly') === '1') filter.driftOnly = true;
   const sort = params.get('sort');
+  const sortKey = sort && validSortKeys.includes(sort) ? (sort as SortKey) : DEFAULT_SORT_KEY;
+  const asc = params.get('asc');
   return {
     filter,
-    sortKey: sort && validSortKeys.includes(sort) ? (sort as SortKey) : DEFAULT_SORT_KEY,
-    ascending: params.get('asc') === '1',
+    sortKey,
+    ascending: asc === null ? defaultAscending(sortKey) : asc === '1',
   };
 }
 
@@ -57,6 +66,8 @@ export function serializeListState(state: ListUrlState, base?: URLSearchParams):
   }
   if (state.filter.driftOnly) params.set('driftOnly', '1');
   if (state.sortKey !== DEFAULT_SORT_KEY) params.set('sort', state.sortKey);
-  if (state.ascending) params.set('asc', '1');
+  if (state.ascending !== defaultAscending(state.sortKey)) {
+    params.set('asc', state.ascending ? '1' : '0');
+  }
   return params;
 }

@@ -15,6 +15,8 @@ import {
   getQuantization,
 } from '../utils/aibomFields';
 import { SORTABLE_METRICS } from '../types/aibom';
+import { formatTimestamp } from '../utils/formatTimestamp';
+import { defaultAscending } from '../utils/listUrlState';
 
 interface AIBOMListTableProps {
   items: AIBOMResource[];
@@ -40,10 +42,14 @@ const AIBOMListTable: FC<AIBOMListTableProps> = ({
   const metricKey = sortKey === 'age' ? undefined : SORTABLE_METRICS[sortKey];
 
   const onSortClick = (clicked: SortKey) => {
-    onSort(clicked, clicked === sortKey ? !ascending : false);
+    onSort(clicked, clicked === sortKey ? !ascending : defaultAscending(clicked));
   };
 
-  const sortDirection: SortByDirection = ascending ? SortByDirection.asc : SortByDirection.desc;
+  // Age's "ascending" means newest first, which reads as a descending date column.
+  const displayAscending = sortKey === 'age' ? !ascending : ascending;
+  const sortDirection: SortByDirection = displayAscending
+    ? SortByDirection.asc
+    : SortByDirection.desc;
 
   const sortParams = (key: SortKey, index: number) => ({
     sort: {
@@ -98,7 +104,7 @@ const AIBOMListTable: FC<AIBOMListTableProps> = ({
             <Td dataLabel={t('Experiment intent')}>{getExperimentIntent(item) || '—'}</Td>
             <Td dataLabel={t('Quantization')}>{getQuantization(item) || '—'}</Td>
             <Td dataLabel={t('GPU type')}>{getGpuType(item) || '—'}</Td>
-            <Td dataLabel={t('Collected at')}>{getCollectedAt(item) || '—'}</Td>
+            <Td dataLabel={t('Collected at')}>{formatTimestamp(getCollectedAt(item))}</Td>
             {metricKey && (
               <Td dataLabel={sortKey}>
                 {getMetricAvg(item, metricKey).toFixed(2)} {getMetricUnit(item, metricKey)}

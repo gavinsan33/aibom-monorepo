@@ -14,17 +14,34 @@ describe('listUrlState', () => {
 
   it('omits defaults and preserves unrelated params', () => {
     const out = serializeListState(
-      { filter: {}, sortKey: 'age', ascending: false },
+      { filter: {}, sortKey: 'age', ascending: true },
       new URLSearchParams('foo=bar&model=old'),
     );
     expect(out.toString()).toBe('foo=bar');
+  });
+
+  it('defaults to newest-first (age ascending)', () => {
+    expect(parseListState(new URLSearchParams(''), KEYS)).toEqual({
+      filter: {},
+      sortKey: 'age',
+      ascending: true,
+    });
+  });
+
+  it('round-trips oldest-first age and a non-default metric direction', () => {
+    for (const state of [
+      { filter: {}, sortKey: 'age' as const, ascending: false },
+      { filter: {}, sortKey: 'cpu-usage' as const, ascending: false },
+    ]) {
+      expect(parseListState(serializeListState(state), KEYS)).toEqual(state);
+    }
   });
 
   it('falls back to defaults for an unknown sort key', () => {
     expect(parseListState(new URLSearchParams('sort=bogus'), KEYS)).toEqual({
       filter: {},
       sortKey: 'age',
-      ascending: false,
+      ascending: true,
     });
   });
 });
