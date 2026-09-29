@@ -1,6 +1,5 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { QueryBrowser } from '@openshift-console/dynamic-plugin-sdk';
 import {
   Card,
   CardBody,
@@ -21,6 +20,7 @@ import { earliestPodStart } from '../../utils/executionMetadata';
 import { toFlexNumber } from '../../utils/flexible';
 import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
 import Section from './Section';
+import TelemetryChart from './TelemetryChart';
 
 interface AIBOMTelemetryTabProps {
   item: AIBOMResource;
@@ -62,14 +62,18 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                   <Card>
                     <CardTitle>{HARDWARE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
-                      <QueryBrowser
-                        queries={[query]}
-                        namespace={namespace}
-                        fixedEndTime={fixedEndTime}
-                        timespan={timespan}
-                        units={unit}
-                        showLegend={podNames.length > 1}
-                      />
+                      {hasWindow ? (
+                        <TelemetryChart
+                          query={query}
+                          namespace={namespace}
+                          startTime={startMs}
+                          endTime={endMs}
+                          unit={unit}
+                          showLegend={podNames.length > 1}
+                        />
+                      ) : (
+                        <Content component="p">Unable to determine time window for query</Content>
+                      )}
                     </CardBody>
                   </Card>
                 </GridItem>
@@ -94,14 +98,18 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                   <Card>
                     <CardTitle>{INFERENCE_METRIC_LABELS[metricKey] ?? metricKey}</CardTitle>
                     <CardBody>
-                      <QueryBrowser
-                        queries={[query]}
-                        namespace={namespace}
-                        fixedEndTime={fixedEndTime}
-                        timespan={timespan}
-                        units={unit}
-                        showLegend={podNames.length > 1}
-                      />
+                      {hasWindow ? (
+                        <TelemetryChart
+                          query={query}
+                          namespace={namespace}
+                          startTime={startMs}
+                          endTime={endMs}
+                          unit={unit}
+                          showLegend={podNames.length > 1}
+                        />
+                      ) : (
+                        <Content component="p">Unable to determine time window for query</Content>
+                      )}
                     </CardBody>
                   </Card>
                 </GridItem>
