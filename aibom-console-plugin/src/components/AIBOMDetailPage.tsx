@@ -79,6 +79,9 @@ const AIBOMDetailPage: FC = () => {
           </Bullseye>
         ) : (
           <Tabs
+            // Don't mount the Telemetry tab (~16 QueryBrowsers, each issuing its own
+            // Prometheus request) until it's opened; PF renders every tab eagerly otherwise.
+            mountOnEnter
             activeKey={activeTab}
             onSelect={(_event, key) => {
               setActiveTab(key);

@@ -1,17 +1,14 @@
 import { buildHardwareQuery, buildVllmQuery } from './promql';
 
 describe('buildHardwareQuery', () => {
+  it('has no live query for DCGM GPU metrics (tenancy proxy cannot see them)', () => {
+    for (const key of ['gpu_utilization', 'gpu_memory_used', 'gpu_power']) {
+      expect(buildHardwareQuery(key, ['pod-a'])).toBeUndefined();
+    }
+  });
+
   it('builds each hardware metric query verbatim for a single pod', () => {
     const pod = ['pod-a'];
-    expect(buildHardwareQuery('gpu_utilization', pod)).toBe(
-      'avg_over_time(DCGM_FI_DEV_GPU_UTIL{exported_pod=~"pod-a"}[5m])',
-    );
-    expect(buildHardwareQuery('gpu_memory_used', pod)).toBe(
-      'avg_over_time(DCGM_FI_DEV_FB_USED{exported_pod=~"pod-a"}[5m])',
-    );
-    expect(buildHardwareQuery('gpu_power', pod)).toBe(
-      'avg_over_time(DCGM_FI_DEV_POWER_USAGE{exported_pod=~"pod-a"}[5m])',
-    );
     expect(buildHardwareQuery('cpu_usage', pod)).toBe(
       'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!=""}[5m])',
     );
@@ -83,5 +80,13 @@ describe('buildVllmQuery', () => {
   it('returns undefined for no pods or an unknown metric', () => {
     expect(buildVllmQuery('num_requests_running', [])).toBeUndefined();
     expect(buildVllmQuery('not_a_metric', ['pod-a'])).toBeUndefined();
+  });
+
+  it('drops pod names that could alter the query', () => {
+    const evil = 'x"} or up{a="';
+    expect(buildVllmQuery('num_requests_running', [evil])).toBeUndefined();
+    expect(buildHardwareQuery('cpu_usage', ['pod-a', evil, 'a|b', 'pod-c'])).toBe(
+      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-c", container!="POD", container!=""}[5m])',
+    );
   });
 });

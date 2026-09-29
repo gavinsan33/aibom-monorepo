@@ -44,8 +44,10 @@ mirror and you'd be inventing presentation, not porting it.
 
 **Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
 `AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
-charts, one per metric, via the console SDK's `QueryBrowser` component --
-**not** a custom chart renderer or a new charting library dependency.
+charts, one per metric, via the console SDK's `QueryBrowser` component
+(`fixedEndTime`/`timespan` pin it to the run's window) -- **not** a custom
+chart renderer or a new charting library dependency (a recharts version was
+tried and removed).
 `src/utils/promql.ts` builds the PromQL, mirroring
 `aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
@@ -75,7 +77,8 @@ resource for it -- the plugin's SA has no API access by design.
 
 **RBAC (verified, not guessed)**: `QueryBrowser` is always given a
 `namespace` prop, which makes console's own `getPrometheusURL` route
-through the *tenancy-scoped* Prometheus proxy (`/api/prometheus-tenancy` ->
+through the *tenancy-scoped* Prometheus proxy
+(`/api/prometheus-tenancy` ->
 `thanos-querier.openshift-monitoring.svc:9092`) instead of the cluster-wide
 admin one (`/api/prometheus` -> `:9091`, needs `cluster-monitoring-view`).
 The tenancy port's `kube-rbac-proxy` sidecar (per
@@ -87,7 +90,20 @@ clusterrole view -o yaml` and a live `oc auth can-i get pods.metrics.k8s.io
 grant anywhere in this repo or `aibom-webhook-service`'s charts for viewer
 access** -- it's already covered by `aibom-view`'s `view` aggregation. If
 you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
-switch back to the admin-only endpoint and reintroduce this requirement.
+switch back to the admin-only endpoint and reintroduce this requirement. Pod names in queries
+come from unvalidated `spec.data`, so `promql.ts` drops any that aren't
+DNS-1123 subdomains rather than interpolating them.
+
+**No live GPU charts (verified)**: DCGM series (`DCGM_FI_DEV_*`) are scraped
+from the dcgm-exporter pod, so their `namespace` label is `nvidia-gpu-operator`
+(the workload's own pod/namespace land in `exported_pod`/`exported_namespace`).
+The tenancy proxy injects `namespace=<workload-ns>` into every query, so DCGM
+queries return empty -- confirmed with a live query from a pod in a workload
+namespace (cAdvisor series returned data, `count(DCGM_FI_DEV_GPU_UTIL)` did
+not). The only fixes are granting viewers access to the GPU operator namespace
+or `cluster-monitoring-view`, both deliberately rejected. So `promql.ts` has no
+GPU builders and the tab shows a note pointing at the recorded stats instead.
+Don't re-add them without changing that RBAC decision.
 
 **Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
 mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
