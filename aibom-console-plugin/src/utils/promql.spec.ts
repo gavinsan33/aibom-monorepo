@@ -81,4 +81,12 @@ describe('buildVllmQuery', () => {
     expect(buildVllmQuery('num_requests_running', [])).toBeUndefined();
     expect(buildVllmQuery('not_a_metric', ['pod-a'])).toBeUndefined();
   });
+
+  it('drops pod names that could alter the query', () => {
+    const evil = 'x"} or up{a="';
+    expect(buildVllmQuery('num_requests_running', [evil])).toBeUndefined();
+    expect(buildHardwareQuery('cpu_usage', ['pod-a', evil, 'a|b', 'pod-c'])).toBe(
+      'rate(container_cpu_usage_seconds_total{pod=~"pod-a|pod-c", container!="POD", container!=""}[5m])',
+    );
+  });
 });

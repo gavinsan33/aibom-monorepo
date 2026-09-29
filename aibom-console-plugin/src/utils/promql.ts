@@ -7,7 +7,16 @@
  * missing rate() here would silently render an empty/wrong chart.
  */
 
-/** `pod=~"a|b|c"`-style regex alternation. Pod names are DNS-1123 subdomains (no regex metacharacters), so no escaping is needed. */
+/**
+ * DNS-1123 subdomain. Pod names come from `spec.data`, which is
+ * unvalidated (`x-kubernetes-preserve-unknown-fields`), so anything else
+ * (quotes, braces, `|`) could rewrite the query and is dropped, not escaped.
+ */
+const POD_NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
+const validPodNames = (podNames: string[]): string[] =>
+  podNames.filter((name) => name.length <= 253 && POD_NAME_RE.test(name));
+
+/** `pod=~"a|b|c"`-style regex alternation. Names are pre-validated by `validPodNames` (no regex metacharacters besides `.`, which only over-matches within the same namespace), so no escaping is needed. */
 const podRegex = (podNames: string[]): string => podNames.join('|');
 
 type QueryBuilder = (podNames: string[]) => string;
@@ -67,11 +76,13 @@ const VLLM_QUERY_BUILDERS: Partial<Record<string, QueryBuilder>> = {
 };
 
 export function buildHardwareQuery(metricKey: string, podNames: string[]): string | undefined {
-  if (podNames.length === 0) return undefined;
-  return HARDWARE_QUERY_BUILDERS[metricKey]?.(podNames);
+  const pods = validPodNames(podNames);
+  if (pods.length === 0) return undefined;
+  return HARDWARE_QUERY_BUILDERS[metricKey]?.(pods);
 }
 
 export function buildVllmQuery(metricKey: string, podNames: string[]): string | undefined {
-  if (podNames.length === 0) return undefined;
-  return VLLM_QUERY_BUILDERS[metricKey]?.(podNames);
+  const pods = validPodNames(podNames);
+  if (pods.length === 0) return undefined;
+  return VLLM_QUERY_BUILDERS[metricKey]?.(pods);
 }

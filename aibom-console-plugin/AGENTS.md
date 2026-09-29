@@ -44,8 +44,9 @@ mirror and you'd be inventing presentation, not porting it.
 
 **Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
 `AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
-charts, one per metric, via the console SDK's `QueryBrowser` component --
-**not** a custom chart renderer or a new charting library dependency.
+charts, one per metric, rendered by `TelemetryChart.tsx` (recharts) from a
+same-origin `fetch` to the tenancy-scoped Prometheus proxy (it does **not**
+use the SDK's `QueryBrowser`).
 `src/utils/promql.ts` builds the PromQL, mirroring
 `aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
@@ -73,9 +74,10 @@ publicPath uses for chunks) and defaults to *enabled* when the file is
 missing or unreadable. Don't gate it on cluster RBAC or watch a cluster
 resource for it -- the plugin's SA has no API access by design.
 
-**RBAC (verified, not guessed)**: `QueryBrowser` is always given a
-`namespace` prop, which makes console's own `getPrometheusURL` route
-through the *tenancy-scoped* Prometheus proxy (`/api/prometheus-tenancy` ->
+**RBAC (verified, not guessed)**: `TelemetryChart` always calls
+`/api/prometheus-tenancy/...` with a `namespace` query param, which
+routes through the *tenancy-scoped* Prometheus proxy
+(`/api/prometheus-tenancy` ->
 `thanos-querier.openshift-monitoring.svc:9092`) instead of the cluster-wide
 admin one (`/api/prometheus` -> `:9091`, needs `cluster-monitoring-view`).
 The tenancy port's `kube-rbac-proxy` sidecar (per
@@ -86,8 +88,10 @@ clusterrole view -o yaml` and a live `oc auth can-i get pods.metrics.k8s.io
 -n <ns>` check. **Don't add a `cluster-monitoring-view` RBAC requirement or
 grant anywhere in this repo or `aibom-webhook-service`'s charts for viewer
 access** -- it's already covered by `aibom-view`'s `view` aggregation. If
-you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
-switch back to the admin-only endpoint and reintroduce this requirement.
+you ever switch to the `/api/prometheus` endpoint (or `QueryBrowser` without
+a `namespace` prop), you reintroduce this requirement. Pod names in queries
+come from unvalidated `spec.data`, so `promql.ts` drops any that aren't
+DNS-1123 subdomains rather than interpolating them.
 
 **No live GPU charts (verified)**: DCGM series (`DCGM_FI_DEV_*`) are scraped
 from the dcgm-exporter pod, so their `namespace` label is `nvidia-gpu-operator`

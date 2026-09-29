@@ -50,7 +50,7 @@ const TelemetryChart: FC<TelemetryChartProps> = ({
 
         const url = `/api/prometheus-tenancy/api/v1/query_range?query=${encodeURIComponent(
           query
-        )}&start=${start}&end=${end}&step=${step}&namespace=${namespace}`;
+        )}&start=${start}&end=${end}&step=${step}&namespace=${encodeURIComponent(namespace)}`;
 
         const response = await fetch(url);
         if (!response.ok) {
