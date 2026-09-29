@@ -1,3 +1,4 @@
+{{- if .Values.plugin.enabled }}
 apiVersion: console.openshift.io/v1
 kind: ConsolePlugin
 metadata:
@@ -6,7 +7,7 @@ metadata:
     {{- include "openshift-console-plugin.labels" . | nindent 4 }}
 spec:
   displayName: {{ default (printf "%s Plugin" (include "openshift-console-plugin.name" .)) .Values.plugin.description }}
-  i18n: 
+  i18n:
     loadType: Preload
   backend:
     type: Service
@@ -15,3 +16,4 @@ spec:
       namespace: {{ .Release.Namespace }}
       port: {{ .Values.plugin.port }}
       basePath: {{ .Values.plugin.basePath }}
+{{- end }}

@@ -1,5 +1,6 @@
 ---
 plugin:
+  enabled: true
   name: "aibom-console-plugin"
   description: "AIBOM Console Plugin"
   image: "quay.io/gsanders/aibom-console-plugin:latest"
