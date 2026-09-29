@@ -12,27 +12,45 @@ default_repo := "quay.io/gsanders"
 docker-build *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    repo="{{ default_repo }}"
+    no_latest=false
     img="aibom-console-plugin:latest"
     for arg in {{ args }}; do
         case "$arg" in
             --img=*) img="${arg#--img=}" ;;
-            *) echo "error: unknown argument '$arg' (expected --img=<image>)" >&2; exit 1 ;;
+            --repo=*) repo="${arg#--repo=}" ;;
+            --no-latest) no_latest=true ;;
+            *) echo "error: unknown argument '$arg' (expected --img=<image>, --repo=<repo>, or --no-latest)" >&2; exit 1 ;;
         esac
     done
-    docker build -t "$img" .
+    if [[ "$no_latest" = true ]]; then
+        sha="$(git rev-parse --short HEAD)"
+        git diff --quiet HEAD || sha="${sha}-dirty"
+        img="aibom-console-plugin:${sha}"
+    fi
+    docker build -t "$repo/$img" .
 
 [group('images')]
 docker-push *args:
     #!/usr/bin/env bash
     set -euo pipefail
+    repo="{{ default_repo }}"
+    no_latest=false
     img="aibom-console-plugin:latest"
     for arg in {{ args }}; do
         case "$arg" in
             --img=*) img="${arg#--img=}" ;;
-            *) echo "error: unknown argument '$arg' (expected --img=<image>)" >&2; exit 1 ;;
+            --repo=*) repo="${arg#--repo=}" ;;
+            --no-latest) no_latest=true ;;
+            *) echo "error: unknown argument '$arg' (expected --img=<image>, --repo=<repo>, or --no-latest)" >&2; exit 1 ;;
         esac
     done
-    docker push "$img"
+    if [[ "$no_latest" = true ]]; then
+        sha="$(git rev-parse --short HEAD)"
+        git diff --quiet HEAD || sha="${sha}-dirty"
+        img="aibom-console-plugin:${sha}"
+    fi
+    docker push "$repo/$img"
 
 # --- Cluster deployment --------------------------------------------------------
 
@@ -58,7 +76,8 @@ deploy-local *args: _check-auth
     repo="{{ default_repo }}"
     version=""
     values_file=""
-    namespace="project-aibom" # Default namespace
+    namespace="project-aibom"
+    skip_plugin_cr=false
     skip_patcher=false
     for arg in {{ args }}; do
         case "$arg" in
@@ -66,8 +85,9 @@ deploy-local *args: _check-auth
             --version=*) version="${arg#--version=}" ;;
             --values=*) values_file="${arg#--values=}" ;;
             --namespace=*) namespace="${arg#--namespace=}" ;;
+            --skip-plugin-cr) skip_plugin_cr=true ;;
             --skip-patcher) skip_patcher=true ;;
-            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, --namespace=<ns>, or --skip-patcher)" >&2; exit 1 ;;
+            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, --namespace=<ns>, --skip-plugin-cr, or --skip-patcher)" >&2; exit 1 ;;
         esac
     done
     if [[ -z "$version" ]]; then
@@ -79,9 +99,10 @@ deploy-local *args: _check-auth
     "$engine" push "$img_ref"
     values_args=()
     [[ -n "$values_file" ]] && values_args=(-f "$values_file")
+    [[ "$skip_plugin_cr" = true ]] && values_args+=(--set plugin.enabled=false)
     [[ "$skip_patcher" = true ]] && values_args+=(--set plugin.jobs.patchConsoles.enabled=false)
     kube_as_user_args=()
-    [[ "$skip_patcher" = false ]] && kube_as_user_args=(--kube-as-user=system:admin)
+    [[ "$skip_plugin_cr" = true && "$skip_patcher" = true ]] || kube_as_user_args=(--kube-as-user=system:admin)
     helm upgrade --install aibom-console-plugin "oci://$repo/aibom-console-plugin" \
         -n "$namespace" --create-namespace \
         --set plugin.image="$img_ref" \
@@ -95,11 +116,12 @@ deploy-local *args: _check-auth
 # to deploy a different source or pin to an immutable sha tag.
 #
 # By default, `just deploy` requires cluster-admin to create cluster-scoped
-# resources (ClusterRole/ClusterRoleBinding, ConsolePlugin). Pass --skip-patcher
-# to disable the auto-patcher job and avoid needing cluster-admin — a
-# cluster-admin must then manually register the plugin by editing Console CR.
+# resources (ConsolePlugin CR, ClusterRole/ClusterRoleBinding, patcher Job).
+# Pass --skip-plugin-cr to skip creating the ConsolePlugin CR (a cluster-admin
+# must create it manually). Pass --skip-patcher to only disable the auto-patcher
+# job. Use both flags together to deploy with no cluster-admin access.
 #
-# Usage: just deploy [--repo=<repo>] [--version=<tag>] [--values=<file>] [--namespace=<ns>] [--skip-patcher]
+# Usage: just deploy [--repo=<repo>] [--version=<tag>] [--values=<file>] [--namespace=<ns>] [--skip-plugin-cr] [--skip-patcher]
 [group('deploy')]
 deploy *args: _check-auth
     #!/usr/bin/env bash
@@ -107,7 +129,8 @@ deploy *args: _check-auth
     repo="{{ default_repo }}"
     version="latest"
     values_file=""
-    namespace="project-aibom" # Default Namespace
+    namespace="project-aibom"
+    skip_plugin_cr=false
     skip_patcher=false
     for arg in {{ args }}; do
         case "$arg" in
@@ -115,15 +138,17 @@ deploy *args: _check-auth
             --version=*) version="${arg#--version=}" ;;
             --values=*) values_file="${arg#--values=}" ;;
             --namespace=*) namespace="${arg#--namespace=}" ;;
+            --skip-plugin-cr) skip_plugin_cr=true ;;
             --skip-patcher) skip_patcher=true ;;
-            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, --namespace=<ns>, or --skip-patcher)" >&2; exit 1 ;;
+            *) echo "error: unknown argument '$arg' (expected --repo=<repo>, --version=<tag>, --values=<file>, --namespace=<ns>, --skip-plugin-cr, or --skip-patcher)" >&2; exit 1 ;;
         esac
     done
     values_args=()
     [[ -n "$values_file" ]] && values_args=(-f "$values_file")
+    [[ "$skip_plugin_cr" = true ]] && values_args+=(--set plugin.enabled=false)
     [[ "$skip_patcher" = true ]] && values_args+=(--set plugin.jobs.patchConsoles.enabled=false)
     kube_as_user_args=()
-    [[ "$skip_patcher" = false ]] && kube_as_user_args=(--kube-as-user=system:admin)
+    [[ "$skip_plugin_cr" = true && "$skip_patcher" = true ]] || kube_as_user_args=(--kube-as-user=system:admin)
     helm upgrade --install aibom-console-plugin "oci://$repo/aibom-console-plugin" \
         -n "$namespace" --create-namespace \
         --version "$version" \
