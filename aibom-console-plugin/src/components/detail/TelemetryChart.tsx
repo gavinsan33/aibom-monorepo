@@ -11,8 +11,23 @@ interface TelemetryChartProps {
   endTime: number;
   timespan: number;
   units?: string;
-  showLegend?: boolean;
+  /** Prefix series titles with the pod name (JobSets / multi-pod runs). */
+  multiPod?: boolean;
 }
+
+/**
+ * Short series title instead of QueryBrowser's default of every label, which
+ * for cAdvisor series includes the cgroup path in `id`
+ * (`/kubepods.slice/kubepods-burstable.slice/...`).
+ */
+const seriesTitle =
+  (multiPod: boolean) =>
+  (labels: Record<string, string>): string => {
+    const parts = [multiPod ? labels.pod : undefined, labels.container, labels.interface].filter(
+      Boolean,
+    );
+    return parts.length > 0 ? parts.join(' / ') : labels.pod || 'value';
+  };
 
 /**
  * `QueryBrowser` pinned to a fixed window, with the relative-to-now
@@ -26,7 +41,7 @@ const TelemetryChart: FC<TelemetryChartProps> = ({
   endTime,
   timespan,
   units,
-  showLegend,
+  multiPod = false,
 }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const [zoomed, setZoomed] = useState(false);
@@ -51,7 +66,8 @@ const TelemetryChart: FC<TelemetryChartProps> = ({
         fixedEndTime={endTime}
         timespan={timespan}
         units={units}
-        showLegend={showLegend}
+        showLegend
+        formatSeriesTitle={seriesTitle(multiPod)}
         hideControls
         onZoom={() => {
           setZoomed(true);

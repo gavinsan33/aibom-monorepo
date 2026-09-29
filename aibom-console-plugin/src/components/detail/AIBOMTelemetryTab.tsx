@@ -82,7 +82,7 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                           endTime={endMs}
                           timespan={endMs - startMs}
                           units={QUERY_BROWSER_UNITS[unit ?? ''] ?? unit}
-                          showLegend={podNames.length > 1}
+                          multiPod={podNames.length > 1}
                         />
                       ) : (
                         <Content component="p">Unable to determine time window for query</Content>
@@ -118,7 +118,7 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
                           endTime={endMs}
                           timespan={endMs - startMs}
                           units={QUERY_BROWSER_UNITS[unit ?? ''] ?? unit}
-                          showLegend={podNames.length > 1}
+                          multiPod={podNames.length > 1}
                         />
                       ) : (
                         <Content component="p">Unable to determine time window for query</Content>
