@@ -100,6 +100,18 @@ describe('AIBOMTelemetryTab with stored series', () => {
     expect(screen.getAllByText('CPU Usage').length).toBeGreaterThan(0);
   });
 
+  it('warns and falls back to live charts when the stored copy fails its digest', async () => {
+    const served = payload(gpuMetrics);
+    const recorded = payload(cpuMetrics); // reference describes different content
+    serve(served);
+    render(<AIBOMTelemetryTab item={run(served, { refPayload: recorded })} />);
+
+    expect(
+      await screen.findByText(/doesn't match the AIBOM's recorded digest/),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/container_cpu_usage_seconds_total/)).toBeInTheDocument();
+  });
+
   it('goes straight to live charts, with no spinner, when the AIBOM has no reference', () => {
     const noRef = run(payload(cpuMetrics));
     delete noRef.spec?.data?.telemetry_series_ref;

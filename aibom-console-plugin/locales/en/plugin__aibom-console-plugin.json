@@ -134,6 +134,7 @@
   "Speculative decoding": "Speculative decoding",
   "Start": "Start",
   "Status": "Status",
+  "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted; these runs are queried live instead.": "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted; these runs are queried live instead.",
   "Summary (CSV)": "Summary (CSV)",
   "Telemetry": "Telemetry",
   "Telemetry (CSV)": "Telemetry (CSV)",

@@ -46,7 +46,7 @@ mirror and you'd be inventing presentation, not porting it.
 `AIBOMDetailPage.tsx` via `Tabs`/`Tab`): prefers the series stored with the AIBOM
 (`AIBOMStoredTelemetryCharts.tsx`, the same chart components as the Compare tab
 with one run -- works past Prometheus retention and includes GPU metrics; elapsed
--time axis; a stored copy that fails its digest falls back to live). When
+-time axis; a digest/size mismatch shows a warning and falls back to live). When
 there are no stored series it falls back to live, full-resolution time-series
 charts, one per metric, via the console SDK's `QueryBrowser` component
 (`fixedEndTime`/`timespan` pin it to the run's window) -- **not** a custom

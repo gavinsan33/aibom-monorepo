@@ -125,27 +125,47 @@ export function seriesSource(ref: TelemetrySeriesRef): SeriesSource | undefined 
   };
 }
 
+/** `mismatch`: the payload's SHA-256 or byte length disagrees with the AIBOM's reference (never charted). `unusable`: absent, unparseable, unsupported, or not checkable. */
+export type SeriesCheck =
+  { status: 'ok'; stored: StoredTelemetry } | { status: 'mismatch' | 'unusable' };
+
 /**
- * Parses the series payload string, checking its digest against the AIBOM's
- * reference. That is an integrity check (truncated or edited object), not
- * authenticity: the reference sits in unvalidated `spec.data` and this plugin
- * doesn't verify the AIBOM signature, so anyone who can create an AIBOM in the
- * namespace can point it at another run's series and pass. A mismatch or an
- * unparseable payload is treated as "no stored series" so the caller falls
- * back; this never throws. If WebCrypto is unavailable (non-secure context)
- * the digest check is skipped.
+ * Checks the series payload string against the AIBOM's reference, then parses
+ * it. The SHA-256 is over the UTF-8 bytes of the string exactly as received
+ * (compared case-insensitively) and the byte length must equal `size_bytes`;
+ * only then is it parsed. The reference's own window/size are never replaced by
+ * the object's convenience `spec.window`/`spec.sizeBytes`. This is an integrity
+ * check (truncated or edited object), not authenticity: the reference sits in
+ * unvalidated `spec.data` and this plugin doesn't verify the AIBOM signature,
+ * so anyone who can create an AIBOM in the namespace can point it at another
+ * run's series and pass. Never throws. Without WebCrypto (non-secure context)
+ * the digest can't be checked, so the series is `unusable` rather than trusted.
  */
+export async function checkStoredTelemetry(
+  ref: TelemetrySeriesRef,
+  text: string | undefined,
+): Promise<SeriesCheck> {
+  if (!text) return { status: 'unusable' };
+  try {
+    if (typeof crypto === 'undefined' || typeof crypto.subtle === 'undefined') {
+      return { status: 'unusable' };
+    }
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.length !== ref.size_bytes) return { status: 'mismatch' };
+    const expected = typeof ref.sha256 === 'string' ? ref.sha256.toLowerCase() : '';
+    if ((await sha256Hex(text)) !== expected) return { status: 'mismatch' };
+    const stored = parseStoredTelemetry(text);
+    return stored ? { status: 'ok', stored } : { status: 'unusable' };
+  } catch {
+    return { status: 'unusable' };
+  }
+}
+
+/** `checkStoredTelemetry` reduced to the series, or undefined for mismatch and unusable alike. */
 export async function loadStoredTelemetry(
   ref: TelemetrySeriesRef,
   text: string | undefined,
 ): Promise<StoredTelemetry | undefined> {
-  if (!text) return undefined;
-  try {
-    if (typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined') {
-      if ((await sha256Hex(text)) !== ref.sha256) return undefined;
-    }
-    return parseStoredTelemetry(text);
-  } catch {
-    return undefined;
-  }
+  const check = await checkStoredTelemetry(ref, text);
+  return check.status === 'ok' ? check.stored : undefined;
 }

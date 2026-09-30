@@ -2,6 +2,7 @@ import type { FC } from 'react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Alert,
   Bullseye,
   Card,
   CardBody,
@@ -146,12 +147,12 @@ const LiveTelemetryCharts: FC<AIBOMTelemetryTabProps> = ({ item }) => {
 /**
  * Prefers the series stored with the AIBOM (works past Prometheus retention,
  * includes GPU metrics); falls back to live queries when there are none, and
- * when the stored copy fails its digest check.
+ * when the stored copy fails its digest/size check (with a warning).
  */
 const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const items = useMemo(() => [item], [item]);
-  const { loading, byItem } = useStoredTelemetry(items);
+  const { loading, byItem, mismatched } = useStoredTelemetry(items);
 
   // No reference means nothing to wait for: go straight to live charts.
   if (hasStoredTelemetryRef(item) && loading) {
@@ -167,6 +168,16 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const stored = byItem[0];
   return (
     <>
+      {mismatched.length > 0 && (
+        <Alert
+          variant="warning"
+          isInline
+          title={t(
+            "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted; these runs are queried live instead.",
+            { runs: name },
+          )}
+        />
+      )}
       {stored ? (
         <AIBOMStoredTelemetryCharts
           stored={stored}

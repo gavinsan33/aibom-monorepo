@@ -2,6 +2,7 @@ import type { FC } from 'react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Alert,
   Bullseye,
   Card,
   CardBody,
@@ -97,7 +98,7 @@ function buildChartSpecs(
 const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, runNames }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const [expanded, setExpanded] = useState(false);
-  const { loading, byItem } = useStoredTelemetry(items);
+  const { loading, byItem, mismatched } = useStoredTelemetry(items);
 
   const { hardware, inference } = useMemo(
     () => ({
@@ -166,6 +167,16 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
             'Time axes show elapsed time since each run started, so runs from different times line up.',
           )}
         </Content>
+        {mismatched.length > 0 && (
+          <Alert
+            variant="warning"
+            isInline
+            title={t(
+              "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted; these runs are queried live instead.",
+              { runs: mismatched.map((index) => runNames[index] ?? String(index)).join(', ') },
+            )}
+          />
+        )}
         {liveCount > 0 && (
           <Content component="p">
             {t(

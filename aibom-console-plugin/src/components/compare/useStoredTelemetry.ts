@@ -3,7 +3,7 @@ import { useK8sWatchResources } from '@openshift-console/dynamic-plugin-sdk';
 import type { K8sResourceCommon } from '@openshift-console/dynamic-plugin-sdk';
 import type { AIBOMResource } from '../../types/aibom';
 import type { StoredTelemetry } from '../../types/telemetrySeries';
-import { loadStoredTelemetry, seriesSource } from '../../utils/storedTelemetry';
+import { checkStoredTelemetry, seriesSource } from '../../utils/storedTelemetry';
 
 interface WatchResult {
   data: K8sResourceCommon | null;
@@ -16,13 +16,16 @@ export interface StoredTelemetryState {
   loading: boolean;
   /** Parallel to `items`; undefined when an AIBOM has no (usable) stored series. */
   byItem: (StoredTelemetry | undefined)[];
+  /** Indexes into `items` whose stored series disagrees with the AIBOM's recorded digest/size. Never charted. */
+  mismatched: number[];
 }
 
 /**
  * Loads the `AIBOMTelemetry` object each AIBOM references, through the console
  * proxy with the viewer's own token, so no plugin RBAC. An AIBOM with no
  * reference, or whose object is missing, unreadable, unsupported, or fails its
- * digest, yields `undefined` and the caller falls back to live queries.
+ * digest, yields `undefined` and the caller falls back to live queries; a
+ * digest/size mismatch is additionally reported in `mismatched` for a warning.
  */
 export function useStoredTelemetry(items: AIBOMResource[]): StoredTelemetryState {
   const watches = useMemo(
@@ -65,7 +68,7 @@ export function useStoredTelemetry(items: AIBOMResource[]): StoredTelemetryState
     .join('|');
 
   const [verified, setVerified] = useState<
-    { key: string; byItem: (StoredTelemetry | undefined)[] } | undefined
+    { key: string; byItem: (StoredTelemetry | undefined)[]; mismatched: number[] } | undefined
   >();
 
   useEffect(() => {
@@ -76,15 +79,21 @@ export function useStoredTelemetry(items: AIBOMResource[]): StoredTelemetryState
         const ref = item.spec?.data?.telemetry_series_ref;
         const resource = results[String(index)]?.data;
         const text = ref && resource ? seriesSource(ref)?.text(resource) : undefined;
-        return ref ? loadStoredTelemetry(ref, text) : Promise.resolve(undefined);
+        return ref ? checkStoredTelemetry(ref, text) : Promise.resolve(undefined);
       }),
     )
-      .then((byItem) => {
-        if (!cancelled) setVerified({ key: inputKey, byItem });
+      .then((checks) => {
+        if (cancelled) return;
+        setVerified({
+          key: inputKey,
+          byItem: checks.map((c) => (c?.status === 'ok' ? c.stored : undefined)),
+          mismatched: checks.flatMap((c, i) => (c?.status === 'mismatch' ? [i] : [])),
+        });
       })
       .catch(() => {
         // Defensive: loading must always finish, or the tab spins forever.
-        if (!cancelled) setVerified({ key: inputKey, byItem: items.map(() => undefined) });
+        if (!cancelled)
+          setVerified({ key: inputKey, byItem: items.map(() => undefined), mismatched: [] });
       });
     return () => {
       cancelled = true;
@@ -97,5 +106,6 @@ export function useStoredTelemetry(items: AIBOMResource[]): StoredTelemetryState
   return {
     loading: !ready,
     byItem: ready ? verified.byItem : items.map(() => undefined),
+    mismatched: ready ? verified.mismatched : [],
   };
 }

@@ -103,6 +103,20 @@ describe('AIBOMCompareTelemetryTab', () => {
     expect(screen.queryByLabelText('Loading telemetry')).not.toBeInTheDocument();
   });
 
+  it('warns and does not chart a stored series whose digest disagrees with the AIBOM', async () => {
+    mockSeriesObjects(seriesJson.replace('"start":1000', '"start":1001'));
+    render(
+      <AIBOMCompareTelemetryTab
+        items={[run('a', 1, true), run('b', 1)]}
+        runNames={['run-a', 'run-b']}
+      />,
+    );
+    expect(
+      await screen.findByText(/doesn't match the AIBOM's recorded digest for: {{runs}}/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Runs without stored telemetry \(\{\{count\}\}\)/)).toBeInTheDocument();
+  });
+
   it('falls back to live queries for a run without stored series and says so', async () => {
     render(
       <AIBOMCompareTelemetryTab items={[run('a', 1), run('b', 1)]} runNames={['run-a', 'run-b']} />,
