@@ -78,9 +78,14 @@ export function useStoredTelemetry(items: AIBOMResource[]): StoredTelemetryState
         const text = ref && resource ? seriesSource(ref)?.text(resource) : undefined;
         return ref ? loadStoredTelemetry(ref, text) : Promise.resolve(undefined);
       }),
-    ).then((byItem) => {
-      if (!cancelled) setVerified({ key: inputKey, byItem });
-    });
+    )
+      .then((byItem) => {
+        if (!cancelled) setVerified({ key: inputKey, byItem });
+      })
+      .catch(() => {
+        // Defensive: loading must always finish, or the tab spins forever.
+        if (!cancelled) setVerified({ key: inputKey, byItem: items.map(() => undefined) });
+      });
     return () => {
       cancelled = true;
     };

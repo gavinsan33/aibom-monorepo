@@ -22,27 +22,44 @@ export const hasStoredTelemetryRef = (item: AIBOMResource): boolean => {
   return Boolean(ref && seriesSource(ref) && item.metadata?.namespace);
 };
 
+/** Why an AIBOM's stored series couldn't be used, so callers can tell a permission problem from missing or corrupt data. */
+export type StoredTelemetryFailure =
+  'no-reference' | 'forbidden' | 'not-found' | 'invalid' | 'error';
+
+export interface StoredTelemetryResult {
+  stored?: StoredTelemetry;
+  failure?: StoredTelemetryFailure;
+}
+
+/** HTTP status of a rejected console request (`HttpError.code`), if any. */
+const httpStatus = (error: unknown): number | undefined => {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'number' ? code : undefined;
+};
+
 /**
  * One-shot fetch of an AIBOM's stored series (the Compare tab uses a watch
- * instead). Resolves undefined for no reference, an unreadable or missing
- * object, an unsupported schema, or a digest mismatch -- the export just skips
- * that AIBOM.
+ * instead). Never throws: the result carries either the series or the reason
+ * they're unavailable -- no reference, forbidden (viewer lacks the read grant),
+ * not found, invalid (missing payload, digest mismatch, unsupported schema), or
+ * another error.
  */
-export async function fetchStoredTelemetry(
-  item: AIBOMResource,
-): Promise<StoredTelemetry | undefined> {
+export async function fetchStoredTelemetry(item: AIBOMResource): Promise<StoredTelemetryResult> {
   const ref = item.spec?.data?.telemetry_series_ref;
   const source = ref && seriesSource(ref);
   const namespace = item.metadata?.namespace;
-  if (!ref || !source || !namespace) return undefined;
+  if (!ref || !source || !namespace) return { failure: 'no-reference' };
+
+  let resource: unknown;
   try {
-    const resource: unknown = await k8sGet({
-      model: AIBOM_TELEMETRY_MODEL,
-      name: source.name,
-      ns: namespace,
-    });
-    return await loadStoredTelemetry(ref, source.text(resource));
-  } catch {
-    return undefined;
+    resource = await k8sGet({ model: AIBOM_TELEMETRY_MODEL, name: source.name, ns: namespace });
+  } catch (error) {
+    const status = httpStatus(error);
+    if (status === 403 || status === 401) return { failure: 'forbidden' };
+    if (status === 404) return { failure: 'not-found' };
+    return { failure: 'error' };
   }
+
+  const stored = await loadStoredTelemetry(ref, source.text(resource));
+  return stored ? { stored } : { failure: 'invalid' };
 }

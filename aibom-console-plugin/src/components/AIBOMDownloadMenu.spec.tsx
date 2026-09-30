@@ -51,7 +51,8 @@ const withSeries = (name: string): AIBOMResource => ({
   },
 });
 
-const savedCsv = (call: number): string => downloadMock.mock.calls[call][1];
+/** The CSV passed to `downloadCsv`, whether as one string or as chunks. */
+const savedCsv = (call: number): string => [downloadMock.mock.calls[call][1]].flat().join('');
 
 describe('AIBOMDownloadMenu', () => {
   beforeAll(() => {
@@ -98,14 +99,30 @@ describe('AIBOMDownloadMenu', () => {
     expect(await screen.findByText(/includes/)).toBeInTheDocument();
   });
 
-  it('says so, and downloads nothing, when the stored series cannot be loaded', async () => {
-    (k8sGet as jest.Mock).mockRejectedValue(new Error('forbidden'));
+  it.each([
+    ['a 403', Object.assign(new Error('forbidden'), { code: 403 }), /permission denied/],
+    ['a 404', Object.assign(new Error('gone'), { code: 404 }), /no longer exists/],
+    ['a network error', new Error('boom'), /failed to load/],
+  ])('says why nothing downloaded on %s', async (_label, error, reason) => {
+    (k8sGet as jest.Mock).mockRejectedValue(error);
     const user = userEvent.setup();
     render(<AIBOMDownloadMenu items={[withSeries('a')]} />);
     await user.click(screen.getByRole('button', { name: 'Download' }));
     await user.click(screen.getByRole('menuitem', { name: /Telemetry/ }));
 
-    expect(await screen.findByText(/None of the selected AIBOMs/)).toBeInTheDocument();
+    expect(await screen.findByText(/Nothing was downloaded/)).toBeInTheDocument();
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    expect(downloadCsv).not.toHaveBeenCalled();
+  });
+
+  it('reports a payload that fails the digest check as invalid, not as missing', async () => {
+    (k8sGet as jest.Mock).mockResolvedValue({ spec: { seriesJson: seriesJson + ' ' } });
+    const user = userEvent.setup();
+    render(<AIBOMDownloadMenu items={[withSeries('a')]} />);
+    await user.click(screen.getByRole('button', { name: 'Download' }));
+    await user.click(screen.getByRole('menuitem', { name: /Telemetry/ }));
+
+    expect(await screen.findByText(/integrity check/)).toBeInTheDocument();
     expect(downloadCsv).not.toHaveBeenCalled();
   });
 });

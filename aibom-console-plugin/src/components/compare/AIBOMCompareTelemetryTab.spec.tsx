@@ -20,7 +20,7 @@ const seriesJson = JSON.stringify({
   },
 });
 
-const run = (name: string, gpu: number, stored = false): AIBOMResource => ({
+const run = (name: string, gpu: number, stored = false, payload = seriesJson): AIBOMResource => ({
   metadata: { name, namespace: `ns-${name}` },
   spec: {
     collectedAt: '2026-01-01T01:00:00Z',
@@ -34,8 +34,8 @@ const run = (name: string, gpu: number, stored = false): AIBOMResource => ({
           schema_version: 1,
           kind: 'AIBOMTelemetry' as const,
           name: `${name}-telemetry-ab12`,
-          sha256: createHash('sha256').update(seriesJson).digest('hex'),
-          size_bytes: seriesJson.length,
+          sha256: createHash('sha256').update(payload).digest('hex'),
+          size_bytes: payload.length,
           window: { start: 1000, end: 1600, step_seconds: 30 },
         },
       }),
@@ -43,13 +43,13 @@ const run = (name: string, gpu: number, stored = false): AIBOMResource => ({
   },
 });
 
-const mockSeriesObjects = () => {
+const mockSeriesObjects = (payload = seriesJson) => {
   (useK8sWatchResources as jest.Mock).mockImplementation((resources: Record<string, unknown>) =>
     Object.fromEntries(
       Object.keys(resources).map((key) => [
         key,
         {
-          data: { metadata: { resourceVersion: '1' }, spec: { seriesJson } },
+          data: { metadata: { resourceVersion: '1' }, spec: { seriesJson: payload } },
           loaded: true,
           loadError: undefined,
         },
@@ -83,6 +83,24 @@ describe('AIBOMCompareTelemetryTab', () => {
       name: 'a-telemetry-ab12',
       isList: false,
     });
+  });
+
+  it('finishes loading, instead of spinning forever, on a payload with a null metric and series', async () => {
+    const malformed = JSON.stringify({
+      schema_version: 1,
+      window: { start: 1000, end: 1600, step_seconds: 30 },
+      pods: [],
+      metrics: { gpu_utilization: null, cpu_usage: { aggregate: [[1000, 1]], series: [null] } },
+    });
+    mockSeriesObjects(malformed);
+    render(
+      <AIBOMCompareTelemetryTab
+        items={[run('a', 1, true, malformed), run('b', 1, true, malformed)]}
+        runNames={['run-a', 'run-b']}
+      />,
+    );
+    expect((await screen.findAllByText('CPU Usage')).length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText('Loading telemetry')).not.toBeInTheDocument();
   });
 
   it('falls back to live queries for a run without stored series and says so', async () => {

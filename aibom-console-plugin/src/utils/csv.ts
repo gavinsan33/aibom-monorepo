@@ -24,9 +24,14 @@ export const csvLine = (cells: unknown[]): string => cells.map(csvCell).join(','
 /** CRLF-terminated lines, per RFC 4180. */
 export const toCsv = (rows: unknown[][]): string => rows.map(csvLine).join('\r\n') + '\r\n';
 
-/** Saves `csv` as `filename`. The UTF-8 BOM makes Excel read non-ASCII text correctly. */
-export function downloadCsv(filename: string, csv: string): void {
-  const url = URL.createObjectURL(new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8' }));
+/**
+ * Saves the CSV as `filename`. Accepts the text in pieces so a large file
+ * never has to be joined into one string first. The UTF-8 BOM makes Excel
+ * read non-ASCII text correctly.
+ */
+export function downloadCsv(filename: string, csv: string | string[]): void {
+  const parts = typeof csv === 'string' ? [csv] : csv;
+  const url = URL.createObjectURL(new Blob(['﻿', ...parts], { type: 'text/csv;charset=utf-8' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = filename;

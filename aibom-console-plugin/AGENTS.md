@@ -87,7 +87,14 @@ truth is that repo's `CLAUDE.md` "Telemetry Time Series". The object is found by
 the reference's own `name` (it can't match the AIBOM's `generateName`d name),
 read via `useK8sWatchResources` with the viewer's own token, and digest-checked
 against the reference's sha256 of the payload string in
-`src/utils/storedTelemetry.ts`; it survives Prometheus's ~15 day retention. (2) **live fallback** for AIBOMs without a reference: the
+`src/utils/storedTelemetry.ts`; it survives Prometheus's ~15 day retention. The
+digest is integrity, not authenticity: the reference lives in unvalidated
+`spec.data` and this plugin doesn't verify the AIBOM signature, so anyone who can
+create an AIBOM in a namespace can point it at another run's `AIBOMTelemetry` in
+that same namespace (never another namespace -- it comes from the AIBOM's own
+metadata). Same trust model as the rest of `spec.data`. The parser
+(`parseStoredTelemetry`) trusts nothing about the payload's shape and never
+throws; a hook that awaits it must still always finish loading. (2) **live fallback** for AIBOMs without a reference: the
 `promql.ts` query through the tenancy proxy (`src/utils/prometheusRange.ts`,
 always with `namespace`), aggregated client-side to match the webhook's rule
 (`liveAggregation`). Same feature flag as the detail tab. The detail tab is still
@@ -104,8 +111,14 @@ Compare view. **Telemetry** is long-format, one row per sample
 timestamp_utc, unix_seconds, value`), in the webhook's raw base units, with the
 identifying columns repeated per row so runs compare in one pivot without joining
 (the summary shares the `aibom` `namespace/name` key). It covers only AIBOMs with
-stored series, fetched on demand with `k8sGet` (never live Prometheus), reports how
-many it skipped, and asks before writing more than `LARGE_EXPORT_ROWS` rows.
+stored series, fetched on demand with `k8sGet` (never live Prometheus). Memory is
+bounded on purpose: rows are built per AIBOM and each payload dropped right away;
+the row count is estimated from each reference's `size_bytes` so the
+`LARGE_EXPORT_ROWS` confirmation happens *before* anything is fetched; past
+`MAX_EXPORT_ROWS` it refuses. It reports how many AIBOMs it skipped and why
+(`fetchStoredTelemetry` returns a failure reason -- forbidden / not-found /
+invalid / error -- so a missing viewer grant isn't reported as "no telemetry").
+Export errors must always surface as a message, never a silent no-op.
 `src/utils/csv.ts` does RFC 4180 escaping and prefixes a `'` to string cells that
 start with `= + - @` (CSV injection: `spec.data` is unvalidated user text); keep
 that when adding columns. List-page downloads cover everything counted in "N

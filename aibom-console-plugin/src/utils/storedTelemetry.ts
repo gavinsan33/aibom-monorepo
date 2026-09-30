@@ -8,42 +8,89 @@ import type {
 /** Highest `schema_version` this code understands; newer payloads are treated as absent rather than misread. */
 export const SUPPORTED_SCHEMA_VERSION = 1;
 
+/** Largest magnitude `Date` accepts, in ms; a sample outside it can't be formatted as a timestamp. */
+const MAX_DATE_MS = 8.64e15;
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
 const isPoint = (p: unknown): p is StoredPoint =>
-  Array.isArray(p) && p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
+  Array.isArray(p) &&
+  p.length === 2 &&
+  isFiniteNumber(p[0]) &&
+  Math.abs(p[0] * 1000) <= MAX_DATE_MS &&
+  isFiniteNumber(p[1]);
 
 const validPoints = (raw: unknown): StoredPoint[] =>
   Array.isArray(raw) ? (raw as unknown[]).filter(isPoint) : [];
 
-/** Parses `series.json`, dropping malformed points/metrics. Returns undefined if it isn't a supported payload. */
+const stringLabels = (raw: unknown): Record<string, string> =>
+  isRecord(raw)
+    ? Object.fromEntries(
+        Object.entries(raw).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      )
+    : {};
+
+function parseMetric(raw: unknown): StoredMetric | undefined {
+  if (!isRecord(raw)) return undefined;
+  const aggregate = validPoints(raw.aggregate);
+  if (aggregate.length === 0) return undefined;
+  return {
+    unit: typeof raw.unit === 'string' ? raw.unit : undefined,
+    aggregation:
+      raw.aggregation === 'sum' || raw.aggregation === 'avg' ? raw.aggregation : undefined,
+    aggregate,
+    aggregate_max: Array.isArray(raw.aggregate_max) ? validPoints(raw.aggregate_max) : undefined,
+    series: Array.isArray(raw.series)
+      ? (raw.series as unknown[]).filter(isRecord).map((s) => ({
+          labels: stringLabels(s.labels),
+          points: validPoints(s.points),
+        }))
+      : undefined,
+    series_omitted: raw.series_omitted === true,
+  };
+}
+
+/**
+ * Parses `series.json`, dropping malformed points, series and metrics. The
+ * payload is a Kubernetes object field, so nothing about its shape is
+ * trusted; returns undefined (never throws) if it isn't a supported payload.
+ */
 export function parseStoredTelemetry(text: string): StoredTelemetry | undefined {
-  let json: unknown;
+  let doc: unknown;
   try {
-    json = JSON.parse(text);
+    doc = JSON.parse(text);
   } catch {
     return undefined;
   }
-  const doc = json as Partial<StoredTelemetry> | null;
-  if (!doc || typeof doc !== 'object' || !doc.window || !doc.metrics) return undefined;
-  const { window } = doc;
-  if (!(doc.schema_version && doc.schema_version <= SUPPORTED_SCHEMA_VERSION)) return undefined;
+  if (!isRecord(doc) || !isRecord(doc.window) || !isRecord(doc.metrics)) return undefined;
+  const { schema_version: version, window } = doc;
+  if (!isFiniteNumber(version) || version < 1 || version > SUPPORTED_SCHEMA_VERSION) {
+    return undefined;
+  }
+  if (
+    !isFiniteNumber(window.start) ||
+    !isFiniteNumber(window.end) ||
+    !isFiniteNumber(window.step_seconds)
+  ) {
+    return undefined;
+  }
 
   const metrics: Record<string, StoredMetric> = {};
   for (const [key, raw] of Object.entries(doc.metrics)) {
-    const aggregate = validPoints(raw.aggregate);
-    if (aggregate.length === 0) continue;
-    metrics[key] = {
-      unit: raw.unit,
-      aggregation: raw.aggregation,
-      aggregate,
-      aggregate_max: raw.aggregate_max ? validPoints(raw.aggregate_max) : undefined,
-      series: raw.series?.map((s) => ({ labels: s.labels, points: validPoints(s.points) })),
-      series_omitted: raw.series_omitted,
-    };
+    const metric = parseMetric(raw);
+    if (metric) metrics[key] = metric;
   }
   return {
-    schema_version: doc.schema_version,
-    window,
-    pods: doc.pods ?? [],
+    schema_version: version,
+    window: { start: window.start, end: window.end, step_seconds: window.step_seconds },
+    pods: Array.isArray(doc.pods)
+      ? (doc.pods as unknown[]).filter((p): p is string => typeof p === 'string')
+      : [],
     metrics,
   };
 }
@@ -70,24 +117,35 @@ export function seriesSource(ref: TelemetrySeriesRef): SeriesSource | undefined 
   return {
     groupVersionKind: { group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOMTelemetry' },
     name: ref.name,
-    text: (resource) => (resource as { spec?: { seriesJson?: string } }).spec?.seriesJson,
+    text: (resource) => {
+      if (!isRecord(resource) || !isRecord(resource.spec)) return undefined;
+      const { seriesJson } = resource.spec;
+      return typeof seriesJson === 'string' ? seriesJson : undefined;
+    },
   };
 }
 
 /**
  * Parses the series payload string, checking its digest against the AIBOM's
- * reference (which sits inside the signed `spec.data`, though this plugin
- * doesn't verify that signature). A mismatch -- truncated or edited object --
- * is treated as "no stored series" so the caller falls back. If WebCrypto is
- * unavailable (non-secure context) the digest check is skipped.
+ * reference. That is an integrity check (truncated or edited object), not
+ * authenticity: the reference sits in unvalidated `spec.data` and this plugin
+ * doesn't verify the AIBOM signature, so anyone who can create an AIBOM in the
+ * namespace can point it at another run's series and pass. A mismatch or an
+ * unparseable payload is treated as "no stored series" so the caller falls
+ * back; this never throws. If WebCrypto is unavailable (non-secure context)
+ * the digest check is skipped.
  */
 export async function loadStoredTelemetry(
   ref: TelemetrySeriesRef,
   text: string | undefined,
 ): Promise<StoredTelemetry | undefined> {
   if (!text) return undefined;
-  if (typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined') {
-    if ((await sha256Hex(text)) !== ref.sha256) return undefined;
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined') {
+      if ((await sha256Hex(text)) !== ref.sha256) return undefined;
+    }
+    return parseStoredTelemetry(text);
+  } catch {
+    return undefined;
   }
-  return parseStoredTelemetry(text);
 }

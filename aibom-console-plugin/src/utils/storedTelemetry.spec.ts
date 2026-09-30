@@ -45,6 +45,55 @@ describe('parseStoredTelemetry', () => {
     expect(parseStoredTelemetry('{}')).toBeUndefined();
     expect(parseStoredTelemetry(JSON.stringify({ ...payload, schema_version: 2 }))).toBeUndefined();
   });
+
+  it('never throws on structurally wrong payloads', () => {
+    const wrong = [
+      { ...payload, metrics: { cpu_usage: null } },
+      { ...payload, metrics: { cpu_usage: 'x' } },
+      { ...payload, metrics: [] },
+      { ...payload, window: 'soon' },
+      { ...payload, window: { start: 'a', end: 1, step_seconds: 1 } },
+      { ...payload, pods: 7 },
+      [],
+      null,
+      42,
+    ];
+    for (const doc of wrong) {
+      expect(() => parseStoredTelemetry(JSON.stringify(doc))).not.toThrow();
+    }
+    expect(parseStoredTelemetry(JSON.stringify({ ...payload, window: 'soon' }))).toBeUndefined();
+  });
+
+  it('skips null series entries, coerces bad labels, and drops unrepresentable timestamps', () => {
+    const parsed = parseStoredTelemetry(
+      JSON.stringify({
+        ...payload,
+        metrics: {
+          cpu_usage: {
+            unit: 5,
+            aggregation: 'median',
+            aggregate: [
+              [100, 1],
+              [1e20, 2], // past what Date can represent
+            ],
+            series: [
+              null,
+              { labels: { pod: 'a', n: 3 }, points: [[100, 1]] },
+              { points: [[100, 1]] },
+            ],
+          },
+        },
+      }),
+    );
+    const metric = parsed?.metrics.cpu_usage;
+    expect(metric?.aggregate).toEqual([[100, 1]]);
+    expect(metric?.unit).toBeUndefined();
+    expect(metric?.aggregation).toBeUndefined();
+    expect(metric?.series).toEqual([
+      { labels: { pod: 'a' }, points: [[100, 1]] },
+      { labels: {}, points: [[100, 1]] },
+    ]);
+  });
 });
 
 describe('loadStoredTelemetry', () => {

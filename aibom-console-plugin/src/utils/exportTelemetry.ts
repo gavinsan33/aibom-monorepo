@@ -66,44 +66,59 @@ export function countTelemetryRows(stored: StoredTelemetry): number {
   );
 }
 
+/** Hard ceiling: past this many rows the export is refused rather than risking a browser tab. */
+export const MAX_EXPORT_ROWS = 5_000_000;
+
+/** Rough JSON size of one `[unix_seconds,value],` point, for estimating rows from a reference's `size_bytes` before fetching anything. */
+const APPROX_BYTES_PER_POINT = 17;
+
+export const estimateTelemetryRows = (sizeBytes: number): number =>
+  Math.ceil(sizeBytes / APPROX_BYTES_PER_POINT);
+
+/** ISO-8601 UTC, or empty for a timestamp `Date` can't represent (never throws). */
+const isoUtc = (unixSeconds: number): string => {
+  const date = new Date(unixSeconds * 1000);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+};
+
+export const telemetryCsvHeader = (): string => csvLine(HEADER) + '\r\n';
+
 /**
- * Long-format telemetry for every AIBOM that has stored series: one row per
- * sample. A few identifying columns repeat on each row so runs can be compared
- * in a single pivot table without joining the summary file (which shares the
+ * One AIBOM's data rows (CRLF-terminated, no header): one row per sample. A
+ * few identifying columns repeat on each row so runs can be compared in a
+ * single pivot table without joining the summary file (which shares the
  * `aibom` key). Values are the raw base units the webhook stores; nothing is
- * rescaled, with `unit` as its own column.
+ * rescaled, with `unit` as its own column. Returned per AIBOM so callers can
+ * discard each payload as soon as its rows are built.
  */
-export function buildTelemetryCsv(
-  entries: { item: AIBOMResource; stored: StoredTelemetry }[],
-): string {
-  const lines = [csvLine(HEADER)];
-  for (const { item, stored } of entries) {
-    const identity = [
-      aibomKey(item),
-      getJobName(item),
-      getModelName(item),
-      getGpuType(item),
-      getGpuCount(item),
-      getExperimentIntent(item),
-    ];
-    for (const metricKey of orderedMetricKeys(stored)) {
-      const metric = stored.metrics[metricKey];
-      for (const line of metricLines(metric)) {
-        for (const [ts, value] of line.points) {
-          lines.push(
-            csvLine([
-              ...identity,
-              metricKey,
-              metric.unit,
-              line.series,
-              new Date(ts * 1000).toISOString(),
-              ts,
-              value,
-            ]),
-          );
-        }
+export function telemetryCsvRows(item: AIBOMResource, stored: StoredTelemetry): string {
+  const identity = [
+    aibomKey(item),
+    getJobName(item),
+    getModelName(item),
+    getGpuType(item),
+    getGpuCount(item),
+    getExperimentIntent(item),
+  ];
+  const lines: string[] = [];
+  for (const metricKey of orderedMetricKeys(stored)) {
+    const metric = stored.metrics[metricKey];
+    for (const line of metricLines(metric)) {
+      for (const [ts, value] of line.points) {
+        lines.push(
+          csvLine([...identity, metricKey, metric.unit, line.series, isoUtc(ts), ts, value]),
+        );
       }
     }
   }
-  return lines.join('\r\n') + '\r\n';
+  return lines.length > 0 ? lines.join('\r\n') + '\r\n' : '';
+}
+
+export function buildTelemetryCsv(
+  entries: { item: AIBOMResource; stored: StoredTelemetry }[],
+): string {
+  return (
+    telemetryCsvHeader() +
+    entries.map(({ item, stored }) => telemetryCsvRows(item, stored)).join('')
+  );
 }
