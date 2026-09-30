@@ -22,14 +22,17 @@ here.
 - **List view**: Filter/sort AIBOMs across a namespace or all projects (mirroring `oc-aibom list`)
 - **Detail view**: Full field breakdown — model, dataset, environment, performance tables (mirroring `oc-aibom describe`)
 - **Compare view**: Side-by-side comparison of 2+ AIBOMs with hardware/inference metrics and delta calculations
-- **Telemetry tab**: Live Prometheus charts for GPU, CPU, memory, network, and inference metrics (vLLM)
+- **Telemetry tabs** (Detail and Compare): charts for GPU, CPU, memory, network, and inference metrics (vLLM), drawn from the time series the webhook stores with each AIBOM at collection time, so they outlive Prometheus's retention. AIBOMs created before that was stored have no charts.
+- **CSV export**: download a summary or the full telemetry of the selected AIBOMs
 
 ## Prerequisites
 
 - `aibom-webhook-service`'s CRD (`aiboms.aibom.io`) and its `aibom-view`
   aggregated `ClusterRole` installed on the cluster. A user with `view` on a
   namespace can already browse AIBOMs there through this plugin — including
-  the Telemetry tab's live charts — with no extra RBAC grant.
+  the Telemetry charts (which read each AIBOM's stored `AIBOMTelemetry`
+  object, covered by the same role in the webhook chart's current version) —
+  with no extra RBAC grant.
 - Node.js and [yarn](https://yarnpkg.com) to build the plugin.
 - `oc`/`kubectl` and an OpenShift cluster (4.12+, `ConsolePlugin` CRD v1) to
   run or deploy it.

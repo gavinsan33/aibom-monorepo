@@ -22,11 +22,7 @@ import {
   INFERENCE_METRIC_ORDER,
 } from '../../types/aibom';
 import type { StoredTelemetry } from '../../types/telemetrySeries';
-import { LIVE_METRIC_UNITS } from '../../utils/formatMetricValue';
-import { toFlexNumber } from '../../utils/flexible';
-import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
 import { runColor } from '../../utils/runColors';
-import { getTelemetryWindow } from '../../utils/telemetryWindow';
 import Section from '../detail/Section';
 import TelemetryCompareChart from './TelemetryCompareChart';
 import type { CompareChartRun } from './TelemetryCompareChart';
@@ -45,49 +41,26 @@ interface ChartSpec {
 }
 
 /**
- * A run contributes its stored series when it has them (only metrics that
- * returned data are stored, so no gpu/vLLM gating is needed -- and stored GPU
- * series are the only per-GPU data, since live DCGM queries can't pass the
- * tenancy proxy). Otherwise it falls back to a live query under the same
- * gating as the single-AIBOM Telemetry tab: hardware needs `gpu_count > 0`,
- * inference needs vLLM.
+ * One chart per metric that any compared run has stored series for. Only
+ * metrics that returned data are stored, so no GPU/vLLM gating is needed; a
+ * run without stored series (or lacking that metric) is simply absent from
+ * the chart.
  */
 function buildChartSpecs(
-  items: AIBOMResource[],
   runNames: string[],
   stored: (StoredTelemetry | undefined)[],
   metricKeys: readonly string[],
   labels: Record<string, string>,
-  liveEligible: (item: AIBOMResource) => boolean,
-  buildQuery: (metricKey: string, podNames: string[]) => string | undefined,
   keyPrefix: string,
 ): ChartSpec[] {
   return metricKeys.flatMap((metricKey) => {
     const runs: CompareChartRun[] = [];
     let unit: string | undefined;
-    items.forEach((item, colorIndex) => {
-      const name = runNames[colorIndex];
-      const storedMetric = stored[colorIndex]?.metrics[metricKey];
-      const storedRun = stored[colorIndex];
-      if (storedMetric && storedRun) {
-        unit ??= storedMetric.unit;
-        runs.push({
-          kind: 'stored',
-          name,
-          colorIndex,
-          metric: storedMetric,
-          windowStart: storedRun.window.start,
-        });
-        return;
-      }
-      if (storedRun) return; // has stored series, just not this metric: don't fall back live
-      const namespace = item.metadata?.namespace;
-      const { podNames, startMs, endMs, hasWindow } = getTelemetryWindow(item);
-      if (!liveEligible(item) || !namespace || !hasWindow) return;
-      const query = buildQuery(metricKey, podNames);
-      if (!query) return;
-      unit ??= LIVE_METRIC_UNITS[metricKey];
-      runs.push({ kind: 'live', name, colorIndex, metricKey, query, namespace, startMs, endMs });
+    stored.forEach((run, colorIndex) => {
+      const metric = run?.metrics[metricKey];
+      if (!run || !metric) return;
+      unit ??= metric.unit;
+      runs.push({ name: runNames[colorIndex], colorIndex, metric, windowStart: run.window.start });
     });
     return runs.length > 0
       ? [{ key: `${keyPrefix}-${metricKey}`, title: labels[metricKey] ?? metricKey, unit, runs }]
@@ -103,27 +76,21 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
   const { hardware, inference } = useMemo(
     () => ({
       hardware: buildChartSpecs(
-        items,
         runNames,
         byItem,
         HARDWARE_METRIC_ORDER,
         HARDWARE_METRIC_LABELS,
-        (item) => (toFlexNumber(item.spec?.data?.environment?.gpu_count) ?? 0) > 0,
-        buildHardwareQuery,
         'hw',
       ),
       inference: buildChartSpecs(
-        items,
         runNames,
         byItem,
         INFERENCE_METRIC_ORDER,
         INFERENCE_METRIC_LABELS,
-        (item) => item.spec?.data?.inference?.serving_engine === 'vllm',
-        buildVllmQuery,
         'inf',
       ),
     }),
-    [items, runNames, byItem],
+    [runNames, byItem],
   );
 
   if (loading) {
@@ -134,7 +101,11 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
     );
   }
 
-  const liveCount = byItem.filter((stored) => !stored).length;
+  const nameOf = (index: number): string => runNames[index] ?? String(index);
+  // Runs that failed the integrity check get their own warning; the rest just have nothing stored.
+  const withoutStored = byItem.flatMap((stored, index) =>
+    stored || mismatched.includes(index) ? [] : [nameOf(index)],
+  );
 
   const renderCharts = (specs: ChartSpec[], emptyText: string) =>
     specs.length === 0 ? (
@@ -172,16 +143,16 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
             variant="warning"
             isInline
             title={t(
-              "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted; these runs are queried live instead.",
-              { runs: mismatched.map((index) => runNames[index] ?? String(index)).join(', ') },
+              "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted.",
+              { runs: mismatched.map(nameOf).join(', ') },
             )}
           />
         )}
-        {liveCount > 0 && (
+        {withoutStored.length > 0 && (
           <Content component="p">
             {t(
-              'Runs without stored telemetry ({{count}}) are queried live; their charts are empty once past Prometheus retention (about 15 days).',
-              { count: liveCount },
+              'No usable stored telemetry for: {{runs}}. These runs are left out of the charts (AIBOMs created before telemetry was stored have none).',
+              { runs: withoutStored.join(', ') },
             )}
           </Content>
         )}
@@ -200,10 +171,10 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
         />
       </GridItem>
       <Section title={t('Hardware Telemetry')}>
-        {renderCharts(hardware, t('No hardware telemetry is available for the compared runs.'))}
+        {renderCharts(hardware, t('No hardware telemetry is stored for the compared runs.'))}
       </Section>
       <Section title={t('Inference Telemetry')}>
-        {renderCharts(inference, t('Inference telemetry is only available for vLLM workloads.'))}
+        {renderCharts(inference, t('No inference telemetry is stored for the compared runs.'))}
       </Section>
     </Grid>
   );

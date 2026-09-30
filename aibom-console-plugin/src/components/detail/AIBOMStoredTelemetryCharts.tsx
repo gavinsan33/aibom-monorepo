@@ -38,11 +38,10 @@ const presentMetrics = (
     .map((metricKey) => ({ key: metricKey, title: labels[metricKey] ?? metricKey, metricKey }));
 
 /**
- * The detail tab's charts drawn from the AIBOM's stored series, so they work
- * past Prometheus retention and include GPU metrics (which the live proxy
- * can't reach). Same components as the Compare tab, with a single run. Time
- * runs from the run's own start, so the axis is elapsed time, not the wall
- * clock the live `QueryBrowser` charts show.
+ * The detail tab's charts, drawn from the series stored with the AIBOM (so
+ * they outlive Prometheus retention and include GPU metrics). Same components
+ * as the Compare tab, with a single run. Time runs from the run's own start,
+ * so the axis is elapsed time, not the wall clock.
  */
 const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
   stored,
@@ -76,7 +75,6 @@ const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
                   expanded={expanded}
                   runs={[
                     {
-                      kind: 'stored',
                       name,
                       colorIndex: 0,
                       metric: stored.metrics[spec.metricKey],

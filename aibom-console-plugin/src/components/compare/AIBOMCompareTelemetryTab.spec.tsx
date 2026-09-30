@@ -73,7 +73,7 @@ describe('AIBOMCompareTelemetryTab', () => {
     );
     expect((await screen.findAllByText('GPU Utilization')).length).toBeGreaterThan(0);
     expect((await screen.findAllByText('run-a')).length).toBeGreaterThan(1); // label + legend
-    expect(screen.queryByText(/queried live/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No usable stored telemetry/)).not.toBeInTheDocument();
     const watched = (useK8sWatchResources as jest.Mock).mock.calls.flatMap(
       ([resources]: [Record<string, unknown>]) => Object.values(resources),
     );
@@ -114,21 +114,28 @@ describe('AIBOMCompareTelemetryTab', () => {
     expect(
       await screen.findByText(/doesn't match the AIBOM's recorded digest for: {{runs}}/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Runs without stored telemetry \(\{\{count\}\}\)/)).toBeInTheDocument();
+    // The mismatched run is not charted, and the run with nothing stored is listed separately.
+    expect(screen.queryByText('GPU Utilization')).not.toBeInTheDocument();
+    expect(screen.getByText(/No usable stored telemetry for:/)).toBeInTheDocument();
   });
 
-  it('falls back to live queries for a run without stored series and says so', async () => {
+  it('leaves a run without stored series out of the charts and says which', async () => {
+    mockSeriesObjects();
+    render(
+      <AIBOMCompareTelemetryTab
+        items={[run('a', 1, true), run('b', 1)]}
+        runNames={['run-a', 'run-b']}
+      />,
+    );
+    expect((await screen.findAllByText('GPU Utilization')).length).toBeGreaterThan(0);
+    expect(screen.getByText(/No usable stored telemetry for:/)).toBeInTheDocument();
+  });
+
+  it('shows notes instead of charts when no run has stored series', async () => {
     render(
       <AIBOMCompareTelemetryTab items={[run('a', 1), run('b', 1)]} runNames={['run-a', 'run-b']} />,
     );
-    expect((await screen.findAllByText('CPU Usage')).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Runs without stored telemetry/)).toBeInTheDocument();
-  });
-
-  it('shows a note instead of charts when nothing qualifies', async () => {
-    render(
-      <AIBOMCompareTelemetryTab items={[run('a', 0), run('b', 0)]} runNames={['run-a', 'run-b']} />,
-    );
-    expect(await screen.findByText(/No hardware telemetry is available/)).toBeInTheDocument();
+    expect(await screen.findByText(/No hardware telemetry is stored/)).toBeInTheDocument();
+    expect(screen.getByText(/No inference telemetry is stored/)).toBeInTheDocument();
   });
 });

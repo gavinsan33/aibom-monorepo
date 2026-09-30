@@ -24,27 +24,3 @@ export const useK8sWatchResources = jest.fn((resources: Record<string, unknown>)
     Object.keys(resources).map((key) => [key, { data: null, loaded: true, loadError: undefined }]),
   ),
 ) as unknown as typeof SDK.useK8sWatchResources;
-
-/** Returns one two-point series per call by default; tests override with `mockResolvedValue`. */
-export const consoleFetchJSON = jest.fn().mockResolvedValue({
-  data: {
-    result: [
-      {
-        metric: { pod: 'p' },
-        values: [
-          [0, '1'],
-          [60, '2'],
-        ],
-      },
-    ],
-  },
-}) as unknown as typeof SDK.consoleFetchJSON;
-
-/** Renders its query/namespace props as visible text so tests can assert the right PromQL/scoping reached the component, without needing the real chart-rendering implementation. */
-export const QueryBrowser: typeof SDK.QueryBrowser = ({ queries, namespace }) => (
-  <div data-test="query-browser" data-namespace={namespace}>
-    {queries.map((query) => (
-      <div key={query}>{query}</div>
-    ))}
-  </div>
-);

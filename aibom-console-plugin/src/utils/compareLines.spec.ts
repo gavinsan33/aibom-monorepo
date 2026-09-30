@@ -1,5 +1,5 @@
 import type { StoredMetric } from '../types/telemetrySeries';
-import { aggregatePoints, linesFromLive, linesFromStored, liveAggregation } from './compareLines';
+import { linesFromStored } from './compareLines';
 
 const metric: StoredMetric = {
   unit: 'bytes',
@@ -43,41 +43,5 @@ describe('linesFromStored', () => {
     expect(
       linesFromStored({ ...metric, series: metric.series?.slice(0, 1) }, 100, true, 'r', 0),
     ).toHaveLength(1);
-  });
-});
-
-describe('live aggregation', () => {
-  const series = [
-    {
-      labels: { pod: 'a' },
-      points: [
-        { x: 0, y: 1 },
-        { x: 15, y: 2 },
-      ],
-    },
-    { labels: { pod: 'b' }, points: [{ x: 0, y: 3 }] },
-  ];
-
-  it('sums or averages sample-by-sample', () => {
-    expect(aggregatePoints(series, 'sum')).toEqual([
-      { x: 0, y: 4 },
-      { x: 15, y: 2 },
-    ]);
-    expect(aggregatePoints(series, 'avg')).toEqual([
-      { x: 0, y: 2 },
-      { x: 15, y: 2 },
-    ]);
-  });
-
-  it('averages utilization/latency/cache metrics and sums the rest', () => {
-    expect(liveAggregation('gpu_utilization')).toBe('avg');
-    expect(liveAggregation('kv_cache_usage')).toBe('avg');
-    expect(liveAggregation('memory_usage')).toBe('sum');
-    expect(liveAggregation('prompt_throughput')).toBe('sum');
-  });
-
-  it('expands live series when asked', () => {
-    expect(linesFromLive(series, 'cpu_usage', true, 'run', 1)).toHaveLength(2);
-    expect(linesFromLive(series, 'cpu_usage', false, 'run', 1)).toHaveLength(1);
   });
 });

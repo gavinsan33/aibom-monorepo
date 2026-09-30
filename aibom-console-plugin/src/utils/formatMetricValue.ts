@@ -35,19 +35,3 @@ export function formatMetricValue(value: number, unit?: string): string {
   }
   return `${compact(value)}${unit ? (PLAIN_SUFFIX[unit] ?? '') : ''}`;
 }
-
-/** Raw base unit per metric key, for series that don't carry one (the live Prometheus path). */
-export const LIVE_METRIC_UNITS: Record<string, string | undefined> = {
-  cpu_usage: 'cores',
-  memory_usage: 'bytes',
-  network_receive: 'bytes_per_sec',
-  network_transmit: 'bytes_per_sec',
-  storage_read_throughput: 'bytes_per_sec',
-  storage_write_throughput: 'bytes_per_sec',
-  time_to_first_token_seconds: 'seconds',
-  inter_token_latency_seconds: 'seconds',
-  num_requests_running: 'requests',
-  num_requests_waiting: 'requests',
-  prompt_throughput: 'tokens_per_sec',
-  generation_throughput: 'tokens_per_sec',
-};
