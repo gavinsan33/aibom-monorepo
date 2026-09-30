@@ -25,7 +25,7 @@ export const liveAggregation = (metricKey: string): 'sum' | 'avg' =>
 
 const DASHES = [undefined, '6 3', '2 3', '8 3 2 3'];
 
-const seriesTitle = (labels: Partial<Record<string, string>>): string =>
+export const seriesTitle = (labels: Partial<Record<string, string>>): string =>
   (['pod', 'container', 'interface', 'gpu'] as const)
     .map((k) => labels[k])
     .filter(Boolean)

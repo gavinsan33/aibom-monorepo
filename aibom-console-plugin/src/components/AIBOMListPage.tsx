@@ -31,6 +31,8 @@ import {
   serializeSelected,
 } from '../utils/listUrlState';
 import { sortItems } from '../utils/sort';
+import { aibomKey } from '../utils/exportSummary';
+import AIBOMDownloadMenu from './AIBOMDownloadMenu';
 import AIBOMFilterToolbar from './AIBOMFilterToolbar';
 import AIBOMListTable from './AIBOMListTable';
 
@@ -94,6 +96,14 @@ const AIBOMListPage: FC = () => {
     return sortItems(filtered, sortKey, ascending);
   }, [items, loaded, loadError, filter, sortKey, ascending]);
 
+  // Everything checked, including rows a filter currently hides -- what
+  // "N selected" promises. Rows outside the watched namespace scope can't be
+  // resolved and are left out of downloads.
+  const selectedItems = useMemo(
+    () => items.filter((item) => selected.has(aibomKey(item))),
+    [items, selected],
+  );
+
   return (
     <>
       <DocumentTitle>{t('AIBOMs')}</DocumentTitle>
@@ -127,6 +137,9 @@ const AIBOMListPage: FC = () => {
                   <Button variant="primary" isDisabled={selected.size < 2} onClick={onCompare}>
                     {t('Compare')}
                   </Button>
+                </FlexItem>
+                <FlexItem>
+                  <AIBOMDownloadMenu items={selectedItems} />
                 </FlexItem>
                 <FlexItem>
                   <Button

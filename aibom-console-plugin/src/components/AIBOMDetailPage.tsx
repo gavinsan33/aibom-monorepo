@@ -10,6 +10,8 @@ import {
 import {
   Alert,
   Bullseye,
+  Flex,
+  FlexItem,
   Grid,
   PageSection,
   Spinner,
@@ -19,6 +21,7 @@ import {
 } from '@patternfly/react-core';
 import type { AIBOMResource } from '../types/aibom';
 import { HARDWARE_METRIC_LABELS, HARDWARE_METRIC_ORDER } from '../types/aibom';
+import AIBOMDownloadMenu from './AIBOMDownloadMenu';
 import AIBOMHeaderSection from './detail/AIBOMHeaderSection';
 import AIBOMModelSection from './detail/AIBOMModelSection';
 import AIBOMDatasetSection from './detail/AIBOMDatasetSection';
@@ -78,51 +81,58 @@ const AIBOMDetailPage: FC = () => {
             <Spinner size="xl" aria-label={t('Loading AIBOM')} />
           </Bullseye>
         ) : (
-          <Tabs
-            // Don't mount the Telemetry tab (~16 QueryBrowsers, each issuing its own
-            // Prometheus request) until it's opened; PF renders every tab eagerly otherwise.
-            mountOnEnter
-            activeKey={activeTab}
-            onSelect={(_event, key) => {
-              setActiveTab(key);
-            }}
-          >
-            <Tab eventKey="overview" title={<TabTitleText>{t('Overview')}</TabTitleText>}>
-              <Grid hasGutter>
-                <AIBOMHeaderSection item={item} />
-                <AIBOMModelSection model={data?.model} />
-                <AIBOMDatasetSection dataset={data?.dataset} />
-                <AIBOMSourceSection sourceCode={data?.source_code} />
-                <AIBOMEnvironmentSection environment={data?.environment} />
-                <AIBOMTrainingSection training={data?.training} />
-                <AIBOMFineTuningSection fineTuning={data?.fine_tuning} />
-                <AIBOMInferenceSection inference={data?.inference} />
-                <AIBOMPodsSection pods={data?.execution_metadata?.pods} />
-                {data?.resource_utilization && (
-                  <Section title={t('Hardware Performance')}>
-                    <AIBOMMetricsTable
-                      title={t('Hardware Performance')}
-                      showTitle={false}
-                      metrics={data.resource_utilization.metrics}
-                      order={HARDWARE_METRIC_ORDER}
-                      labels={HARDWARE_METRIC_LABELS}
-                      summaryIncludesColdStart={
-                        data.resource_utilization.summary_includes_cold_start
-                      }
-                      grafanaLinks={data.resource_utilization.grafana_links}
-                      note={data.resource_utilization.note}
-                    />
-                  </Section>
-                )}
-                <AIBOMMetadataSection metadata={data?._metadata} />
-              </Grid>
-            </Tab>
-            {telemetryEnabled && (
-              <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
-                <AIBOMTelemetryTab item={item} />
+          <>
+            <Flex justifyContent={{ default: 'justifyContentFlexEnd' }}>
+              <FlexItem>
+                <AIBOMDownloadMenu items={[item]} />
+              </FlexItem>
+            </Flex>
+            <Tabs
+              // Don't mount the Telemetry tab (~16 QueryBrowsers, each issuing its own
+              // Prometheus request) until it's opened; PF renders every tab eagerly otherwise.
+              mountOnEnter
+              activeKey={activeTab}
+              onSelect={(_event, key) => {
+                setActiveTab(key);
+              }}
+            >
+              <Tab eventKey="overview" title={<TabTitleText>{t('Overview')}</TabTitleText>}>
+                <Grid hasGutter>
+                  <AIBOMHeaderSection item={item} />
+                  <AIBOMModelSection model={data?.model} />
+                  <AIBOMDatasetSection dataset={data?.dataset} />
+                  <AIBOMSourceSection sourceCode={data?.source_code} />
+                  <AIBOMEnvironmentSection environment={data?.environment} />
+                  <AIBOMTrainingSection training={data?.training} />
+                  <AIBOMFineTuningSection fineTuning={data?.fine_tuning} />
+                  <AIBOMInferenceSection inference={data?.inference} />
+                  <AIBOMPodsSection pods={data?.execution_metadata?.pods} />
+                  {data?.resource_utilization && (
+                    <Section title={t('Hardware Performance')}>
+                      <AIBOMMetricsTable
+                        title={t('Hardware Performance')}
+                        showTitle={false}
+                        metrics={data.resource_utilization.metrics}
+                        order={HARDWARE_METRIC_ORDER}
+                        labels={HARDWARE_METRIC_LABELS}
+                        summaryIncludesColdStart={
+                          data.resource_utilization.summary_includes_cold_start
+                        }
+                        grafanaLinks={data.resource_utilization.grafana_links}
+                        note={data.resource_utilization.note}
+                      />
+                    </Section>
+                  )}
+                  <AIBOMMetadataSection metadata={data?._metadata} />
+                </Grid>
               </Tab>
-            )}
-          </Tabs>
+              {telemetryEnabled && (
+                <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
+                  <AIBOMTelemetryTab item={item} />
+                </Tab>
+              )}
+            </Tabs>
+          </>
         )}
       </PageSection>
     </>

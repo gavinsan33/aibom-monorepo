@@ -15,7 +15,10 @@ export const ListPageHeader: typeof SDK.ListPageHeader = ({ title }) => <h1>{tit
 
 export const DocumentTitle: typeof SDK.DocumentTitle = () => null;
 
-/** Every watched resource loads as "not found" (`data: null`) by default; tests override with `mockImplementation` to supply ConfigMaps. */
+/** One-shot fetch; resolves undefined by default (tests supply the `AIBOMTelemetry` object with `mockResolvedValue`). */
+export const k8sGet = jest.fn().mockResolvedValue(undefined) as unknown as typeof SDK.k8sGet;
+
+/** Every watched resource loads as "not found" (`data: null`) by default; tests override with `mockImplementation` to supply series objects. */
 export const useK8sWatchResources = jest.fn((resources: Record<string, unknown>) =>
   Object.fromEntries(
     Object.keys(resources).map((key) => [key, { data: null, loaded: true, loadError: undefined }]),

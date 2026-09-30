@@ -93,6 +93,24 @@ always with `namespace`), aggregated client-side to match the webhook's rule
 (`liveAggregation`). Same feature flag as the detail tab. The detail tab is still
 live-only `QueryBrowser`.
 
+**CSV export** (`src/components/AIBOMDownloadMenu.tsx`, on the List view's
+selection bar and the Detail view): a "Download" menu with exactly two items, each
+producing ONE file however many AIBOMs are selected -- deliberately not a
+checkbox + zip, and not one file per AIBOM (two files from one click trips
+browsers' multiple-download prompt). **Summary** is wide, one row per AIBOM,
+built from `compareFields.ts`/`comparePerformance.ts` so it can't drift from the
+Compare view. **Telemetry** is long-format, one row per sample
+(`aibom, job, model, gpu_type, gpu_count, experiment_intent, metric, unit, series,
+timestamp_utc, unix_seconds, value`), in the webhook's raw base units, with the
+identifying columns repeated per row so runs compare in one pivot without joining
+(the summary shares the `aibom` `namespace/name` key). It covers only AIBOMs with
+stored series, fetched on demand with `k8sGet` (never live Prometheus), reports how
+many it skipped, and asks before writing more than `LARGE_EXPORT_ROWS` rows.
+`src/utils/csv.ts` does RFC 4180 escaping and prefixes a `'` to string cells that
+start with `= + - @` (CSV injection: `spec.data` is unvalidated user text); keep
+that when adding columns. List-page downloads cover everything counted in "N
+selected", including rows a filter hides.
+
 **Telemetry tab toggle**: the tab is enabled/disabled per deployment via
 Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
 `feature-flags.json` key in the plugin's ConfigMap, mounted over the
