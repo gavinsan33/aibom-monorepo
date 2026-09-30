@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 import {
@@ -7,10 +7,21 @@ import {
   ListPageHeader,
   useK8sWatchResources,
 } from '@openshift-console/dynamic-plugin-sdk';
-import { Alert, Bullseye, Grid, PageSection, Spinner } from '@patternfly/react-core';
+import {
+  Alert,
+  Bullseye,
+  Grid,
+  PageSection,
+  Spinner,
+  Tab,
+  Tabs,
+  TabTitleText,
+} from '@patternfly/react-core';
 import type { AIBOMResource } from '../types/aibom';
 import { getJobName } from '../utils/aibomFields';
+import { getPluginFeatureFlags } from '../utils/pluginFeatureFlags';
 import AIBOMCompareFieldsTable from './compare/AIBOMCompareFieldsTable';
+import AIBOMCompareTelemetryTab from './compare/AIBOMCompareTelemetryTab';
 import AIBOMComparePerformanceTable from './compare/AIBOMComparePerformanceTable';
 import Section from './detail/Section';
 
@@ -33,6 +44,19 @@ function parseItemKeys(raw: string | null): { key: string; namespace: string; na
 const AIBOMComparePage: FC = () => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<string | number>('overview');
+  const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getPluginFeatureFlags().then((flags) => {
+      if (!cancelled) setTelemetryEnabled(flags.telemetryTab);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const itemKeys = useMemo(() => parseItemKeys(searchParams.get('items')), [searchParams]);
 
   const watchResources = useMemo(
@@ -93,14 +117,30 @@ const AIBOMComparePage: FC = () => {
             <Spinner size="xl" aria-label={t('Loading AIBOMs')} />
           </Bullseye>
         ) : (
-          <Grid hasGutter>
-            <Section title={t('Fields')}>
-              <AIBOMCompareFieldsTable items={items} runNames={runNames} />
-            </Section>
-            <Section title={t('Hardware Performance')}>
-              <AIBOMComparePerformanceTable items={items} runNames={runNames} />
-            </Section>
-          </Grid>
+          <Tabs
+            // Telemetry issues a Prometheus query per run per chart; don't mount it until opened.
+            mountOnEnter
+            activeKey={activeTab}
+            onSelect={(_event, key) => {
+              setActiveTab(key);
+            }}
+          >
+            <Tab eventKey="overview" title={<TabTitleText>{t('Overview')}</TabTitleText>}>
+              <Grid hasGutter>
+                <Section title={t('Fields')}>
+                  <AIBOMCompareFieldsTable items={items} runNames={runNames} />
+                </Section>
+                <Section title={t('Hardware Performance')}>
+                  <AIBOMComparePerformanceTable items={items} runNames={runNames} />
+                </Section>
+              </Grid>
+            </Tab>
+            {telemetryEnabled && (
+              <Tab eventKey="telemetry" title={<TabTitleText>{t('Telemetry')}</TabTitleText>}>
+                <AIBOMCompareTelemetryTab items={items} runNames={runNames} />
+              </Tab>
+            )}
+          </Tabs>
         )}
       </PageSection>
     </>

@@ -43,7 +43,7 @@ describe('AIBOMTelemetryTab', () => {
     expect(screen.getByText('CPU Usage')).toBeInTheDocument();
     expect(
       screen.getByText(
-        'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!=""}[5m])',
+        'rate(container_cpu_usage_seconds_total{pod=~"pod-a", container!="POD", container!="", container!="aibom-dataset-sidecar"}[5m])',
       ),
     ).toBeInTheDocument();
   });

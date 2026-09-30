@@ -53,7 +53,9 @@ tried and removed).
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
 windows, the `exported_pod` vs. `pod` label distinction for GPU vs.
 everything else) so live charts read the same series the AIBOM's own
-recorded stats came from. If those queries ever change upstream, update
+recorded stats came from. One deliberate deviation: per-container queries also
+exclude `container="aibom-dataset-sidecar"` (see `WORKLOAD_CONTAINERS`) so the
+webhook's sidecar doesn't show up as a series. If those queries ever change upstream, update
 `promql.ts` and its tests to match -- a drifted label silently produces an
 empty/wrong chart with no error. Time window is `earliestPodStart(pods)` to
 `spec.collectedAt`, cold start included (unlike the summary stats' trimmed
@@ -63,6 +65,18 @@ not a query per pod. Hardware charts gate on `environment.gpu_count > 0`;
 inference charts gate on `inference.serving_engine === 'vllm'` -- matches
 the existing tables' own gating logic, so don't add hardware charts for a
 non-GPU workload just because pods exist.
+
+**Compare view Telemetry tab** (`src/components/compare/AIBOMCompareTelemetryTab.tsx`
++ `TelemetryCompareChart.tsx`): the one deliberate exception to the "no custom
+chart renderer" rule above. `QueryBrowser` can't do this: no series-color prop,
+one `namespace`/window per instance, absolute time axis -- and compared runs
+happened at different times, possibly in different namespaces. So each metric is
+one small inline-SVG overlay (no new dependency): each run's `promql.ts` query is
+fetched from the same tenancy proxy (`src/utils/prometheusRange.ts`, always with
+`namespace`), plotted against elapsed time since that run's own start, in the
+run's `runChartColor` (matches its `Label` in the tables). Same feature flag and
+hardware/vLLM gating as the detail tab (`getTelemetryWindow` is shared). Keep the
+detail tab on `QueryBrowser`.
 
 **Telemetry tab toggle**: the tab is enabled/disabled per deployment via
 Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
