@@ -1,6 +1,8 @@
 import type { FC } from 'react';
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
+  Bullseye,
   Card,
   CardBody,
   CardTitle,
@@ -8,6 +10,7 @@ import {
   EmptyState,
   Grid,
   GridItem,
+  Spinner,
 } from '@patternfly/react-core';
 import type { AIBOMResource } from '../../types/aibom';
 import {
@@ -16,9 +19,13 @@ import {
   INFERENCE_METRIC_LABELS,
   INFERENCE_METRIC_ORDER,
 } from '../../types/aibom';
+import { getJobName } from '../../utils/aibomFields';
+import { hasStoredTelemetryRef } from '../../utils/fetchStoredTelemetry';
 import { toFlexNumber } from '../../utils/flexible';
 import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
 import { getTelemetryWindow } from '../../utils/telemetryWindow';
+import { useStoredTelemetry } from '../compare/useStoredTelemetry';
+import AIBOMStoredTelemetryCharts from './AIBOMStoredTelemetryCharts';
 import Section from './Section';
 import TelemetryChart from './TelemetryChart';
 
@@ -33,7 +40,12 @@ interface AIBOMTelemetryTabProps {
   item: AIBOMResource;
 }
 
-const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
+/**
+ * Live `QueryBrowser` charts straight from Prometheus, for AIBOMs without
+ * stored series. Limited to Prometheus's retention (~15 days), and to non-GPU
+ * metrics: DCGM series can't pass the namespace-scoped proxy.
+ */
+const LiveTelemetryCharts: FC<AIBOMTelemetryTabProps> = ({ item }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const data = item.spec?.data;
   const namespace = item.metadata?.namespace;
@@ -128,6 +140,43 @@ const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
         )}
       </Section>
     </Grid>
+  );
+};
+
+/**
+ * Prefers the series stored with the AIBOM (works past Prometheus retention,
+ * includes GPU metrics); falls back to live queries when there are none, and
+ * when the stored copy fails its digest check.
+ */
+const AIBOMTelemetryTab: FC<AIBOMTelemetryTabProps> = ({ item }) => {
+  const { t } = useTranslation('plugin__aibom-console-plugin');
+  const items = useMemo(() => [item], [item]);
+  const { loading, byItem } = useStoredTelemetry(items);
+
+  // No reference means nothing to wait for: go straight to live charts.
+  if (hasStoredTelemetryRef(item) && loading) {
+    return (
+      <Bullseye>
+        <Spinner size="xl" aria-label={t('Loading telemetry')} />
+      </Bullseye>
+    );
+  }
+
+  const jobName = getJobName(item); // '' when unset, hence not `??`
+  const name = jobName === '' ? (item.metadata?.name ?? '') : jobName;
+  const stored = byItem[0];
+  return (
+    <>
+      {stored ? (
+        <AIBOMStoredTelemetryCharts
+          stored={stored}
+          name={name}
+          expectsGpu={(toFlexNumber(item.spec?.data?.environment?.gpu_count) ?? 0) > 0}
+        />
+      ) : (
+        <LiveTelemetryCharts item={item} />
+      )}
+    </>
   );
 };
 

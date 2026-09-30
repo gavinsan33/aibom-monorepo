@@ -43,11 +43,16 @@ actually rendered by any CLI command, so there's no reference format to
 mirror and you'd be inventing presentation, not porting it.
 
 **Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
-`AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
+`AIBOMDetailPage.tsx` via `Tabs`/`Tab`): prefers the series stored with the AIBOM
+(`AIBOMStoredTelemetryCharts.tsx`, the same chart components as the Compare tab
+with one run -- works past Prometheus retention and includes GPU metrics; elapsed
+-time axis; a stored copy that fails its digest falls back to live). When
+there are no stored series it falls back to live, full-resolution time-series
 charts, one per metric, via the console SDK's `QueryBrowser` component
 (`fixedEndTime`/`timespan` pin it to the run's window) -- **not** a custom
-chart renderer (a recharts version was tried and removed). The Compare view is
-the exception; see its section below.
+chart renderer for the live path (a recharts version was tried and removed).
+Stored series are drawn with `@patternfly/react-charts`; see the Compare view's
+section below.
 `src/utils/promql.ts` builds the PromQL, mirroring
 `aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
 `VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
@@ -97,8 +102,9 @@ metadata). Same trust model as the rest of `spec.data`. The parser
 throws; a hook that awaits it must still always finish loading. (2) **live fallback** for AIBOMs without a reference: the
 `promql.ts` query through the tenancy proxy (`src/utils/prometheusRange.ts`,
 always with `namespace`), aggregated client-side to match the webhook's rule
-(`liveAggregation`). Same feature flag as the detail tab. The detail tab is still
-live-only `QueryBrowser`.
+(`liveAggregation`). Same feature flag as the detail tab. The detail tab uses the
+same stored-first rule but keeps its live fallback on `QueryBrowser` (native zoom
+and wall-clock axis) rather than these charts.
 
 **CSV export** (`src/components/AIBOMDownloadMenu.tsx`, on the List view's
 selection bar and the Detail view): a "Download" menu with exactly two items, each
@@ -162,11 +168,12 @@ queries return empty -- confirmed with a live query from a pod in a workload
 namespace (cAdvisor series returned data, `count(DCGM_FI_DEV_GPU_UTIL)` did
 not). The only fixes are granting viewers access to the GPU operator namespace
 or `cluster-monitoring-view`, both deliberately rejected. So `promql.ts` has no
-GPU builders and the detail tab shows a note pointing at the recorded stats instead.
-Don't re-add live GPU queries without changing that RBAC decision. The exception:
-the webhook queries DCGM itself with its own access and stores GPU series
-(`gpu_utilization`, `gpu_memory_used`, `gpu_power`, per-GPU under `series`), so
-the Compare tab charts them from the stored `AIBOMTelemetry` object. Viewers read
+GPU builders and the live detail path shows a note pointing at the recorded stats
+instead. Don't re-add live GPU queries without changing that RBAC decision. The
+exception: the webhook queries DCGM itself with its own access and stores GPU
+series (`gpu_utilization`, `gpu_memory_used`, `gpu_power`, per-GPU under
+`series`), so the Compare tab and the detail tab (when stored series exist) chart
+them from the stored `AIBOMTelemetry` object. Viewers read
 it through the webhook chart's `aibom-view` grant, not through this plugin.
 
 **Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
