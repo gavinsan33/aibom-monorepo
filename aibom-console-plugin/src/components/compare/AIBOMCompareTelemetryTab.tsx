@@ -1,7 +1,19 @@
 import type { FC } from 'react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Card, CardBody, CardTitle, Content, Grid, GridItem, Label } from '@patternfly/react-core';
+import {
+  Alert,
+  Bullseye,
+  Card,
+  CardBody,
+  CardTitle,
+  Content,
+  Grid,
+  GridItem,
+  Label,
+  Spinner,
+  Switch,
+} from '@patternfly/react-core';
 import type { AIBOMResource } from '../../types/aibom';
 import {
   HARDWARE_METRIC_LABELS,
@@ -9,13 +21,12 @@ import {
   INFERENCE_METRIC_LABELS,
   INFERENCE_METRIC_ORDER,
 } from '../../types/aibom';
-import { toFlexNumber } from '../../utils/flexible';
-import { buildHardwareQuery, buildVllmQuery } from '../../utils/promql';
-import { getTelemetryWindow } from '../../utils/telemetryWindow';
+import type { StoredTelemetry } from '../../types/telemetrySeries';
 import { runColor } from '../../utils/runColors';
 import Section from '../detail/Section';
 import TelemetryCompareChart from './TelemetryCompareChart';
 import type { CompareChartRun } from './TelemetryCompareChart';
+import { useStoredTelemetry } from './useStoredTelemetry';
 
 interface AIBOMCompareTelemetryTabProps {
   items: AIBOMResource[];
@@ -25,70 +36,75 @@ interface AIBOMCompareTelemetryTabProps {
 interface ChartSpec {
   key: string;
   title: string;
-  units?: string;
+  unit?: string;
   runs: CompareChartRun[];
 }
 
 /**
- * Same gating as the single-AIBOM Telemetry tab: hardware charts need
- * `gpu_count > 0`, inference charts need vLLM; a run that doesn't qualify
- * (or has no usable window/namespace) is simply absent from that chart.
+ * One chart per metric that any compared run has stored series for. Only
+ * metrics that returned data are stored, so no GPU/vLLM gating is needed; a
+ * run without stored series (or lacking that metric) is simply absent from
+ * the chart.
  */
 function buildChartSpecs(
-  items: AIBOMResource[],
   runNames: string[],
+  stored: (StoredTelemetry | undefined)[],
   metricKeys: readonly string[],
   labels: Record<string, string>,
-  eligible: (item: AIBOMResource) => boolean,
-  buildQuery: (metricKey: string, podNames: string[]) => string | undefined,
-  unitOf: (item: AIBOMResource, metricKey: string) => string | undefined,
   keyPrefix: string,
 ): ChartSpec[] {
   return metricKeys.flatMap((metricKey) => {
     const runs: CompareChartRun[] = [];
-    let units: string | undefined;
-    items.forEach((item, colorIndex) => {
-      const namespace = item.metadata?.namespace;
-      const { podNames, startMs, endMs, hasWindow } = getTelemetryWindow(item);
-      if (!eligible(item) || !namespace || !hasWindow) return;
-      const query = buildQuery(metricKey, podNames);
-      if (!query) return;
-      units ??= unitOf(item, metricKey);
-      runs.push({ name: runNames[colorIndex], colorIndex, query, namespace, startMs, endMs });
+    let unit: string | undefined;
+    stored.forEach((run, colorIndex) => {
+      const metric = run?.metrics[metricKey];
+      if (!run || !metric) return;
+      unit ??= metric.unit;
+      runs.push({ name: runNames[colorIndex], colorIndex, metric, windowStart: run.window.start });
     });
     return runs.length > 0
-      ? [{ key: `${keyPrefix}-${metricKey}`, title: labels[metricKey] ?? metricKey, units, runs }]
+      ? [{ key: `${keyPrefix}-${metricKey}`, title: labels[metricKey] ?? metricKey, unit, runs }]
       : [];
   });
 }
 
 const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, runNames }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
+  const [expanded, setExpanded] = useState(false);
+  const { loading, byItem, mismatched } = useStoredTelemetry(items);
 
   const { hardware, inference } = useMemo(
     () => ({
       hardware: buildChartSpecs(
-        items,
         runNames,
+        byItem,
         HARDWARE_METRIC_ORDER,
         HARDWARE_METRIC_LABELS,
-        (item) => (toFlexNumber(item.spec?.data?.environment?.gpu_count) ?? 0) > 0,
-        buildHardwareQuery,
-        (item, key) => item.spec?.data?.resource_utilization?.metrics?.[key]?.unit,
         'hw',
       ),
       inference: buildChartSpecs(
-        items,
         runNames,
+        byItem,
         INFERENCE_METRIC_ORDER,
         INFERENCE_METRIC_LABELS,
-        (item) => item.spec?.data?.inference?.serving_engine === 'vllm',
-        buildVllmQuery,
-        (item, key) => item.spec?.data?.inference?.performance?.metrics?.[key]?.unit,
         'inf',
       ),
     }),
-    [items, runNames],
+    [runNames, byItem],
+  );
+
+  if (loading) {
+    return (
+      <Bullseye>
+        <Spinner size="xl" aria-label={t('Loading telemetry')} />
+      </Bullseye>
+    );
+  }
+
+  const nameOf = (index: number): string => runNames[index] ?? String(index);
+  // Runs that failed the integrity check get their own warning; the rest just have nothing stored.
+  const withoutStored = byItem.flatMap((stored, index) =>
+    stored || mismatched.includes(index) ? [] : [nameOf(index)],
   );
 
   const renderCharts = (specs: ChartSpec[], emptyText: string) =>
@@ -101,7 +117,12 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
             <Card>
               <CardTitle>{spec.title}</CardTitle>
               <CardBody>
-                <TelemetryCompareChart runs={spec.runs} units={spec.units} />
+                <TelemetryCompareChart
+                  title={spec.title}
+                  runs={spec.runs}
+                  unit={spec.unit}
+                  expanded={expanded}
+                />
               </CardBody>
             </Card>
           </GridItem>
@@ -117,20 +138,43 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
             'Time axes show elapsed time since each run started, so runs from different times line up.',
           )}
         </Content>
+        {mismatched.length > 0 && (
+          <Alert
+            variant="warning"
+            isInline
+            title={t(
+              "Stored telemetry doesn't match the AIBOM's recorded digest for: {{runs}}. It was not charted.",
+              { runs: mismatched.map(nameOf).join(', ') },
+            )}
+          />
+        )}
+        {withoutStored.length > 0 && (
+          <Content component="p">
+            {t(
+              'No usable stored telemetry for: {{runs}}. These runs are left out of the charts (AIBOMs created before telemetry was stored have none).',
+              { runs: withoutStored.join(', ') },
+            )}
+          </Content>
+        )}
         {runNames.map((name, index) => (
           <Label key={`${name}-${String(index)}`} color={runColor(index)} isCompact>
             {name}
           </Label>
         ))}
+        <Switch
+          id="aibom-compare-telemetry-expanded"
+          label={t('Show individual pods and GPUs')}
+          isChecked={expanded}
+          onChange={(_event, checked) => {
+            setExpanded(checked);
+          }}
+        />
       </GridItem>
       <Section title={t('Hardware Telemetry')}>
-        {renderCharts(
-          hardware,
-          t("No compared run has a GPU; hardware telemetry wasn't collected."),
-        )}
+        {renderCharts(hardware, t('No hardware telemetry is stored for the compared runs.'))}
       </Section>
       <Section title={t('Inference Telemetry')}>
-        {renderCharts(inference, t('Inference telemetry is only available for vLLM workloads.'))}
+        {renderCharts(inference, t('No inference telemetry is stored for the compared runs.'))}
       </Section>
     </Grid>
   );

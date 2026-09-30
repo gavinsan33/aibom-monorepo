@@ -42,41 +42,84 @@ you're tempted to add a `Trend()`-word-based badge (`"up"`/`"down"`/`"flat"`/
 actually rendered by any CLI command, so there's no reference format to
 mirror and you'd be inventing presentation, not porting it.
 
-**Telemetry tab** (`src/components/detail/AIBOMTelemetryTab.tsx`, added to
-`AIBOMDetailPage.tsx` via `Tabs`/`Tab`): live, full-resolution time-series
-charts, one per metric, via the console SDK's `QueryBrowser` component
-(`fixedEndTime`/`timespan` pin it to the run's window) -- **not** a custom
-chart renderer or a new charting library dependency (a recharts version was
-tried and removed).
-`src/utils/promql.ts` builds the PromQL, mirroring
-`aibom-webhook-service/postprocess/postprocess.py`'s `TELEMETRY_QUERIES`/
-`VLLM_TELEMETRY_QUERIES` verbatim (label names, `rate()`/`avg_over_time()`
-windows, the `exported_pod` vs. `pod` label distinction for GPU vs.
-everything else) so live charts read the same series the AIBOM's own
-recorded stats came from. One deliberate deviation: per-container queries also
-exclude `container="aibom-dataset-sidecar"` (see `WORKLOAD_CONTAINERS`) so the
-webhook's sidecar doesn't show up as a series. If those queries ever change upstream, update
-`promql.ts` and its tests to match -- a drifted label silently produces an
-empty/wrong chart with no error. Time window is `earliestPodStart(pods)` to
-`spec.collectedAt`, cold start included (unlike the summary stats' trimmed
-window) since showing that shape is the tab's whole point. Multi-pod
-(JobSet) support is a `pod=~"a|b|c"` regex alternation across all pod names,
-not a query per pod. Hardware charts gate on `environment.gpu_count > 0`;
-inference charts gate on `inference.serving_engine === 'vllm'` -- matches
-the existing tables' own gating logic, so don't add hardware charts for a
-non-GPU workload just because pods exist.
+**Telemetry tabs** (Detail: `src/components/detail/AIBOMTelemetryTab.tsx` +
+`AIBOMStoredTelemetryCharts.tsx`; Compare: `src/components/compare/AIBOMCompareTelemetryTab.tsx`,
+`TelemetryCompareChart.tsx`, `TelemetryLineChart.tsx`): charts drawn **only** from
+the series stored with each AIBOM. There is deliberately **no live-Prometheus
+fallback** -- it was removed (it needed a tenancy-proxy RBAC analysis, PromQL
+builders mirroring the webhook's queries, could never chart GPUs, and only
+reached back ~15 days). An AIBOM with no usable stored series shows an empty
+state on the detail tab and is listed as "left out" on the Compare tab. Don't
+re-add live queries or `QueryBrowser` without rethinking those tradeoffs; the
+repository history has the old `promql.ts`, `prometheusRange.ts`, and the
+RBAC/DCGM notes.
 
-**Compare view Telemetry tab** (`src/components/compare/AIBOMCompareTelemetryTab.tsx`
-+ `TelemetryCompareChart.tsx`): the one deliberate exception to the "no custom
-chart renderer" rule above. `QueryBrowser` can't do this: no series-color prop,
-one `namespace`/window per instance, absolute time axis -- and compared runs
-happened at different times, possibly in different namespaces. So each metric is
-one small inline-SVG overlay (no new dependency): each run's `promql.ts` query is
-fetched from the same tenancy proxy (`src/utils/prometheusRange.ts`, always with
-`namespace`), plotted against elapsed time since that run's own start, in the
-run's `runChartColor` (matches its `Label` in the tables). Same feature flag and
-hardware/vLLM gating as the detail tab (`getTelemetryWindow` is shared). Keep the
-detail tab on `QueryBrowser`.
+Charts use `@patternfly/react-charts` (Victory; bundled -- the console doesn't
+share it -- ~313 KiB min, one lazy chunk). Compared runs happened at different
+times, so every line is plotted against elapsed time since that run's own start,
+in the run's `runChartColor` (matches its `Label` in the tables). Each run is one
+aggregate line by default; the "Show individual pods and GPUs" switch expands to
+per-series lines (same color, dashed variants). Both tabs are gated by the same
+feature flag (below).
+
+Data: `spec.data.telemetry_series_ref` points at a separate `aibom.io/v1alpha1`
+`AIBOMTelemetry` object (payload in `spec.seriesJson`) written by
+`aibom-webhook-service` at collection time -- deliberately not inline in the AIBOM
+(the list page's all-AIBOMs watch would carry it) and not a ConfigMap (it would
+clutter namespaces). Schema: `src/types/telemetrySeries.ts`; source of truth is
+that repo's `CLAUDE.md` "Telemetry Time Series". The object is found by the
+reference's own `name` (it can't match the AIBOM's `generateName`d name), read via
+`useK8sWatchResources` with the viewer's own token. `checkStoredTelemetry`
+(`src/utils/storedTelemetry.ts`) requires the payload's UTF-8 byte length to equal
+the reference's `size_bytes` and its SHA-256 to match before parsing; a mismatch is
+never charted and shows a warning, and with no WebCrypto (non-secure context) the
+series is unusable rather than trusted. That is integrity, not authenticity: the
+reference lives in unvalidated `spec.data` and this plugin doesn't verify the
+AIBOM signature, so anyone who can create an AIBOM in a namespace can point it at
+another run's `AIBOMTelemetry` in that same namespace (never another namespace --
+it comes from the AIBOM's own metadata). Same trust model as the rest of
+`spec.data`. The parser (`parseStoredTelemetry`) trusts nothing about the
+payload's shape and never throws; a hook that awaits it must still always finish
+loading.
+
+GPU: stored series are the *only* GPU data. DCGM series are scraped by the GPU
+operator, so their `namespace` label is `nvidia-gpu-operator` and a
+namespace-scoped viewer query can't reach them; the webhook queries DCGM with its
+own access and stores `gpu_utilization`, `gpu_memory_used`, `gpu_power` (per-GPU
+under `series`). Don't grant viewers `cluster-monitoring-view` or GPU-operator
+namespace access to work around a missing series.
+
+Access: viewers read `AIBOMTelemetry` through the webhook chart's `aibom-view`
+role, not through this plugin (the plugin's own ServiceAccount still has no API
+access). A missing grant makes the watch fail, which the UI can only show as "no
+usable stored telemetry" -- check RBAC first when charts are unexpectedly empty.
+Local dev: the tabs now read ordinary Kubernetes objects, not the Thanos proxy, so
+the old "always 403s under `yarn start-console`" limitation no longer applies
+(untested) as long as the CRD and objects exist on the cluster you point at.
+
+**CSV export** (`src/components/AIBOMDownloadMenu.tsx`, on the List view's
+selection bar and the Detail view): a "Download" menu with exactly two items, each
+producing ONE file however many AIBOMs are selected -- deliberately not a
+checkbox + zip, and not one file per AIBOM (two files from one click trips
+browsers' multiple-download prompt). **Summary** is wide, one row per AIBOM,
+built from `compareFields.ts`/`comparePerformance.ts` so it can't drift from the
+Compare view. **Telemetry** is long-format, one row per sample
+(`aibom, job, model, gpu_type, gpu_count, experiment_intent, metric, unit, series,
+timestamp_utc, unix_seconds, value`), in the webhook's raw base units, with the
+identifying columns repeated per row so runs compare in one pivot without joining
+(the summary shares the `aibom` `namespace/name` key). It covers only AIBOMs with
+stored series, fetched on demand with `k8sGet` (never live Prometheus). Memory is
+bounded on purpose: rows are built per AIBOM and each payload dropped right away;
+the row count is estimated from each reference's `size_bytes` so the
+`LARGE_EXPORT_ROWS` confirmation happens *before* anything is fetched; past
+`MAX_EXPORT_ROWS` it refuses. It reports how many AIBOMs it skipped and why
+(`fetchStoredTelemetry` returns a failure reason -- forbidden / not-found /
+invalid / error -- so a missing viewer grant isn't reported as "no telemetry").
+Export errors must always surface as a message, never a silent no-op.
+`src/utils/csv.ts` does RFC 4180 escaping and prefixes a `'` to string cells that
+start with `= + - @` (CSV injection: `spec.data` is unvalidated user text); keep
+that when adding columns. List-page downloads cover everything counted in "N
+selected", including rows a filter hides.
 
 **Telemetry tab toggle**: the tab is enabled/disabled per deployment via
 Helm value `plugin.featureFlags.telemetryTab`. The chart renders it into a
@@ -88,47 +131,6 @@ console's same-origin `/api/plugins/<name>/` proxy (the prefix webpack's
 publicPath uses for chunks) and defaults to *enabled* when the file is
 missing or unreadable. Don't gate it on cluster RBAC or watch a cluster
 resource for it -- the plugin's SA has no API access by design.
-
-**RBAC (verified, not guessed)**: `QueryBrowser` is always given a
-`namespace` prop, which makes console's own `getPrometheusURL` route
-through the *tenancy-scoped* Prometheus proxy
-(`/api/prometheus-tenancy` ->
-`thanos-querier.openshift-monitoring.svc:9092`) instead of the cluster-wide
-admin one (`/api/prometheus` -> `:9091`, needs `cluster-monitoring-view`).
-The tenancy port's `kube-rbac-proxy` sidecar (per
-`cluster-monitoring-operator`'s own `thanos-querier.libsonnet`) authorizes
-by checking `get` on `pods.metrics.k8s.io` in the query's `namespace` param
--- confirmed present in the standard `view` ClusterRole via `oc get
-clusterrole view -o yaml` and a live `oc auth can-i get pods.metrics.k8s.io
--n <ns>` check. **Don't add a `cluster-monitoring-view` RBAC requirement or
-grant anywhere in this repo or `aibom-webhook-service`'s charts for viewer
-access** -- it's already covered by `aibom-view`'s `view` aggregation. If
-you ever drop the `namespace` prop from a `QueryBrowser` call, you silently
-switch back to the admin-only endpoint and reintroduce this requirement. Pod names in queries
-come from unvalidated `spec.data`, so `promql.ts` drops any that aren't
-DNS-1123 subdomains rather than interpolating them.
-
-**No live GPU charts (verified)**: DCGM series (`DCGM_FI_DEV_*`) are scraped
-from the dcgm-exporter pod, so their `namespace` label is `nvidia-gpu-operator`
-(the workload's own pod/namespace land in `exported_pod`/`exported_namespace`).
-The tenancy proxy injects `namespace=<workload-ns>` into every query, so DCGM
-queries return empty -- confirmed with a live query from a pod in a workload
-namespace (cAdvisor series returned data, `count(DCGM_FI_DEV_GPU_UTIL)` did
-not). The only fixes are granting viewers access to the GPU operator namespace
-or `cluster-monitoring-view`, both deliberately rejected. So `promql.ts` has no
-GPU builders and the tab shows a note pointing at the recorded stats instead.
-Don't re-add them without changing that RBAC decision.
-
-**Local dev-loop limitation**: `yarn start-console`'s off-cluster bridge
-mode (`--k8s-mode-off-cluster-thanos`, what `start-console.sh` sets) points
-*both* the admin and tenancy proxy configs at the same single public Thanos
-URL -- there is no way to reach the real tenancy-enforcing `:9092` service
-from outside the cluster (it's ClusterIP-only by design). So the Telemetry
-tab will *always* 403/404 in local dev regardless of this design being
-correct, and will require `cluster-monitoring-view` locally no matter what.
-Don't "fix" this by loosening the real RBAC design to work around a
-local-only limitation -- verify the Telemetry tab only via an actual
-in-cluster deployment (Helm chart, registered on the real `Console` CR).
 
 Segmented-chart visualizations beyond what the existing metrics tables and
 the Telemetry tab already cover are deliberately out of scope until later

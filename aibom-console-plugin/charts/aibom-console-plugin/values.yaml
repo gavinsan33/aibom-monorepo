@@ -9,9 +9,9 @@ plugin:
   replicas: 2
   port: 9443
   featureFlags:
-    # Show the Telemetry tab (live Prometheus charts) on the AIBOM Detail
-    # view. Rendered into the plugin's served feature-flags.json; no RBAC
-    # is involved.
+    # Show the Telemetry tab (charts from the series stored with each
+    # AIBOM) on the AIBOM Detail and Compare views. Rendered into the
+    # plugin's served feature-flags.json; no RBAC is involved.
     telemetryTab: true
   securityContext:
     enabled: true
