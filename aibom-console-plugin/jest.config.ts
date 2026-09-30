@@ -20,6 +20,8 @@ const config: Config = {
       },
     ],
   },
+  // @noble/* ship ESM only; transform them so Jest can load them.
+  transformIgnorePatterns: ['/node_modules/(?!@noble/)'],
   setupFilesAfterEnv: ['./setup-tests.ts'],
   testPathIgnorePatterns: ['integration-tests'],
 };

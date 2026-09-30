@@ -21,12 +21,23 @@ mapping and sort/filter semantics exactly.
 **Detail view** (`src/components/AIBOMDetailPage.tsx` + `src/components/detail/`):
 a single AIBOM's full field breakdown, mirroring `oc-aibom describe`'s
 section order and field mapping (see that project's `cmd/kubectl-aibom/main.go`
-`printDescribe` if extending this). Deliberately does **not** port
-`describe`'s Ed25519 + RFC 8785 (JCS) signature verification — the
-`Signature:` row only reports presence (`signed — not verified in this view`
-/ `not signed`). Porting real verification (WebCrypto/Ed25519 + a JCS
-canonicalization lib + a cluster ConfigMap lookup) is a deliberate future
-step, not an oversight — don't half-implement it.
+`printDescribe` if extending this). The `Signature:` row is a real verification,
+a port of `oc-aibom`'s `internal/aibom/verify.go` (`src/utils/verifySignature.ts`,
+fetched by `detail/useSignatureVerification.ts`): Ed25519 (`@noble/curves`, not
+WebCrypto -- Ed25519 support varies by browser) over `spec.data` canonicalized per
+RFC 8785 (a ~10-line `canonicalize`, pinned by the same fixture as the webhook's
+`test_sign_aibom_matches_go_jcs_reference_output`), then the embedded
+`spec.signaturePublicKey` is cross-checked against the namespace's
+`aibom-compiled-signing-public-key` ConfigMap, read with the viewer's own token.
+Five states, same as the CLI: `valid` (the only one shown green/"Verified"),
+`unsigned`, `invalid`, `key-mismatch`, `unconfirmed`. An unreadable anchor (no
+grant, no ConfigMap) caps the result at `unconfirmed` -- never `valid`, because a
+forger controlling `data` could embed their own key. The signature covers
+`spec.data` only, not the sibling `spec.jobName`/`modelName`/`collectedAt`
+fields the List view filters on. Not ported: `oc-aibom`'s `VerifySeries`
+(chaining the telemetry series to the signature); the Telemetry tab still only
+does the SHA-256/size integrity check described below. Only the Detail view
+verifies; List/Compare/CSV do not.
 
 **Compare view** (`src/components/AIBOMComparePage.tsx` + `src/components/compare/`):
 select 2+ AIBOMs on the List view (checkbox column + action bar), compared
@@ -74,7 +85,7 @@ reference's own `name` (it can't match the AIBOM's `generateName`d name), read v
 the reference's `size_bytes` and its SHA-256 to match before parsing; a mismatch is
 never charted and shows a warning, and with no WebCrypto (non-secure context) the
 series is unusable rather than trusted. That is integrity, not authenticity: the
-reference lives in unvalidated `spec.data` and this plugin doesn't verify the
+reference lives in unvalidated `spec.data` and the telemetry path doesn't check the
 AIBOM signature, so anyone who can create an AIBOM in a namespace can point it at
 another run's `AIBOMTelemetry` in that same namespace (never another namespace --
 it comes from the AIBOM's own metadata). Same trust model as the rest of

@@ -1,11 +1,13 @@
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { DescriptionList, Label } from '@patternfly/react-core';
+import { DescriptionList, Label, Spinner } from '@patternfly/react-core';
 import type { AIBOMResource } from '../../types/aibom';
 import { earliestPodStart, formatDuration } from '../../utils/executionMetadata';
 import { podStatusColor } from '../../utils/podStatus';
+import { verifyLabelColor } from './verifyLabel';
 import Field from './Field';
 import Section from './Section';
+import { useSignatureVerification } from './useSignatureVerification';
 
 interface AIBOMHeaderSectionProps {
   item: AIBOMResource;
@@ -18,6 +20,14 @@ const AIBOMHeaderSection: FC<AIBOMHeaderSectionProps> = ({ item }) => {
   const status = data.execution_metadata?.status;
   const start = earliestPodStart(data.execution_metadata?.pods);
   const duration = formatDuration(data.execution_metadata?.duration_seconds);
+  const verification = useSignatureVerification(item);
+  const verifyText = {
+    valid: t('Verified'),
+    unsigned: t('Not signed'),
+    invalid: t('Invalid signature'),
+    'key-mismatch': t('Signing key does not match cluster'),
+    unconfirmed: t('Signature valid, key not confirmed'),
+  };
 
   return (
     <Section title={t('Overview')}>
@@ -44,7 +54,17 @@ const AIBOMHeaderSection: FC<AIBOMHeaderSectionProps> = ({ item }) => {
           {status && <Label color={podStatusColor(status)}>{status}</Label>}
         </Field>
         <Field label={t('Signature')}>
-          {spec.signature ? t('signed — not verified in this view') : t('not signed')}
+          {verification ? (
+            <>
+              <Label color={verifyLabelColor(verification.status)}>
+                {verifyText[verification.status]}
+              </Label>{' '}
+              {/* Detail strings come from the (English-only) verifier, like oc-aibom's. */}
+              {verification.status !== 'unsigned' && verification.detail}
+            </>
+          ) : (
+            <Spinner size="md" aria-label={t('Verifying signature')} />
+          )}
         </Field>
       </DescriptionList>
     </Section>
