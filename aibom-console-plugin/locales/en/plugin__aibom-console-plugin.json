@@ -24,6 +24,7 @@
   "Architecture": "Architecture",
   "Auto-detected": "Auto-detected",
   "Avg": "Avg",
+  "Base model": "Base model",
   "Batch size": "Batch size",
   "Cancel": "Cancel",
   "Change": "Change",
@@ -116,6 +117,7 @@
   "Quantization": "Quantization",
   "Random seed": "Random seed",
   "Repository": "Repository",
+  "Revision": "Revision",
   "Runtime": "Runtime",
   "Schema compliance": "Schema compliance",
   "Select at least 2 AIBOMs to compare": "Select at least 2 AIBOMs to compare",
@@ -127,6 +129,7 @@
   "Signature": "Signature",
   "Signature valid, key not confirmed": "Signature valid, key not confirmed",
   "Signing key does not match cluster": "Signing key does not match cluster",
+  "Size": "Size",
   "Sort by": "Sort by",
   "Source": "Source",
   "Speculative decoding": "Speculative decoding",
@@ -151,5 +154,6 @@
   "Unknown error": "Unknown error",
   "Verified": "Verified",
   "Verifying signature": "Verifying signature",
-  "Version": "Version"
+  "Version": "Version",
+  "via": "via"
 }

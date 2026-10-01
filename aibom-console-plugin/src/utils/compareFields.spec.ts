@@ -20,6 +20,16 @@ describe('buildFieldRows', () => {
     expect(modelVersion?.values).toEqual(['1.0', '2.0']);
   });
 
+  it('flags a changed model revision for a same-name model', () => {
+    const at = (revision: string): AIBOMResource => ({
+      spec: { data: { model: { name: 'Qwen/Qwen2.5-32B-Instruct', revision } } },
+    });
+    const rows = buildFieldRows([at('5ede1c97'), at('a1b2c3d4')]);
+    const revision = rows.find((r) => r.label === 'Model Revision');
+    expect(revision?.differs).toBe(true);
+    expect(revision?.values).toEqual(['5ede1c97', 'a1b2c3d4']);
+  });
+
   it('does not flag unrelated fields as differing', () => {
     const rows = buildFieldRows([withModel('granite', '1.0'), withModel('granite', '2.0')]);
     const modelName = rows.find((r) => r.label === 'Model Name');
