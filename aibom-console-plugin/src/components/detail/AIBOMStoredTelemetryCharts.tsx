@@ -79,6 +79,7 @@ const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
                       colorIndex: 0,
                       metric: stored.metrics[spec.metricKey],
                       windowStart: stored.window.start,
+                      windowEnd: stored.window.end,
                     },
                   ]}
                 />

@@ -17,6 +17,8 @@ interface TelemetryLineChartProps {
   /** One legend entry per compared run (not per expanded series). */
   legend: { name: string; colorIndex: number }[];
   unit?: string;
+  /** Fixes the x-axis to `[0, xMax]` elapsed seconds; auto-fits to this chart's own data when omitted. */
+  xMax?: number;
 }
 
 const PLOT_HEIGHT = 220;
@@ -75,7 +77,7 @@ const tooltipLabel =
  * time since each run's own start; every line is drawn in its run's color
  * (`runChartColor`), the same one its table `Label` uses.
  */
-const TelemetryLineChart: FC<TelemetryLineChartProps> = ({ title, lines, legend, unit }) => {
+const TelemetryLineChart: FC<TelemetryLineChartProps> = ({ title, lines, legend, unit, xMax }) => {
   const [ref, width] = useContainerWidth();
   const rows = legendRowCount(
     legend.map((run) => run.name),
@@ -90,6 +92,7 @@ const TelemetryLineChart: FC<TelemetryLineChartProps> = ({ title, lines, legend,
         height={PLOT_HEIGHT + PADDING.top + bottom}
         padding={{ ...PADDING, bottom }}
         minDomain={{ y: 0 }}
+        domain={xMax === undefined ? undefined : { x: [0, xMax] }}
         legendData={legend.map((run) => ({
           name: run.name,
           symbol: { fill: runChartColor(run.colorIndex) },

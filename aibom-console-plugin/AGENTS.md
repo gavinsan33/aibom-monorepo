@@ -68,7 +68,12 @@ RBAC/DCGM notes.
 Charts use `@patternfly/react-charts` (Victory; bundled -- the console doesn't
 share it -- ~313 KiB min, one lazy chunk). Compared runs happened at different
 times, so every line is plotted against elapsed time since that run's own start,
-in the run's `runChartColor` (matches its `Label` in the tables). Each run is one
+in the run's `runChartColor` (matches its `Label` in the tables). Every chart in a
+tab shares the same x range, `[0, longest window]` (`sharedElapsedMax`), rather than
+auto-fitting its own data: metrics start reporting at different times (vLLM's only
+once the server is up, TTFT only once a request completes), and auto-fitting stretched
+those late series across the full width, so the same x position meant different times
+in different charts. Each run is one
 aggregate line by default; the "Show individual pods and GPUs" switch expands to
 per-series lines (same color, dashed variants). Both tabs are gated by the same
 feature flag (below).

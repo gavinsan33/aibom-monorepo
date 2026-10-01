@@ -51,3 +51,22 @@ export function linesFromStored(
   }
   return [{ name, colorIndex, points: rel(metric.aggregate) }];
 }
+
+/**
+ * Upper bound of the shared x-axis (elapsed seconds) for a set of runs: the
+ * longest collection window among them. Without it each chart zooms its x-axis
+ * to its own data, so a metric that only started reporting late (vLLM's
+ * metrics before the server is up, TTFT before any request completes) is
+ * stretched across the full width and looks like it shares a time axis with
+ * charts that started at 0. Undefined when no run knows its window end.
+ */
+export function sharedElapsedMax(
+  runs: { windowStart: number; windowEnd?: number }[],
+): number | undefined {
+  const spans = runs.flatMap((run) =>
+    run.windowEnd !== undefined && run.windowEnd > run.windowStart
+      ? [run.windowEnd - run.windowStart]
+      : [],
+  );
+  return spans.length > 0 ? Math.max(...spans) : undefined;
+}

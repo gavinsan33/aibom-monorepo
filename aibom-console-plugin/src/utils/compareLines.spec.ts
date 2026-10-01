@@ -1,5 +1,5 @@
 import type { StoredMetric } from '../types/telemetrySeries';
-import { linesFromStored } from './compareLines';
+import { linesFromStored, sharedElapsedMax } from './compareLines';
 
 const metric: StoredMetric = {
   unit: 'bytes',
@@ -43,5 +43,26 @@ describe('linesFromStored', () => {
     expect(
       linesFromStored({ ...metric, series: metric.series?.slice(0, 1) }, 100, true, 'r', 0),
     ).toHaveLength(1);
+  });
+});
+
+describe('sharedElapsedMax', () => {
+  it('is the longest window across runs', () => {
+    expect(
+      sharedElapsedMax([
+        { windowStart: 100, windowEnd: 700 },
+        { windowStart: 5000, windowEnd: 6300 },
+      ]),
+    ).toBe(1300);
+  });
+
+  it('ignores runs that do not know their window end', () => {
+    expect(sharedElapsedMax([{ windowStart: 100 }, { windowStart: 0, windowEnd: 90 }])).toBe(90);
+  });
+
+  it('is undefined when no run has a usable window', () => {
+    expect(sharedElapsedMax([{ windowStart: 100 }])).toBeUndefined();
+    expect(sharedElapsedMax([{ windowStart: 100, windowEnd: 100 }])).toBeUndefined();
+    expect(sharedElapsedMax([])).toBeUndefined();
   });
 });

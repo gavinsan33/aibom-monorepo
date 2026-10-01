@@ -60,7 +60,13 @@ function buildChartSpecs(
       const metric = run?.metrics[metricKey];
       if (!run || !metric) return;
       unit ??= metric.unit;
-      runs.push({ name: runNames[colorIndex], colorIndex, metric, windowStart: run.window.start });
+      runs.push({
+        name: runNames[colorIndex],
+        colorIndex,
+        metric,
+        windowStart: run.window.start,
+        windowEnd: run.window.end,
+      });
     });
     return runs.length > 0
       ? [{ key: `${keyPrefix}-${metricKey}`, title: labels[metricKey] ?? metricKey, unit, runs }]
