@@ -9,6 +9,7 @@ import {
   INFERENCE_METRIC_ORDER,
 } from '../../types/aibom';
 import type { StoredTelemetry } from '../../types/telemetrySeries';
+import FitToDataSwitch from '../compare/FitToDataSwitch';
 import TelemetryCompareChart from '../compare/TelemetryCompareChart';
 import Section from './Section';
 
@@ -50,6 +51,7 @@ const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
 }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const [expanded, setExpanded] = useState(false);
+  const [fitToData, setFitToData] = useState(false);
 
   const { hardware, inference } = useMemo(
     () => ({
@@ -73,12 +75,14 @@ const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
                   title={spec.title}
                   unit={stored.metrics[spec.metricKey].unit}
                   expanded={expanded}
+                  fitToData={fitToData}
                   runs={[
                     {
                       name,
                       colorIndex: 0,
                       metric: stored.metrics[spec.metricKey],
                       windowStart: stored.window.start,
+                      windowEnd: stored.window.end,
                     },
                   ]}
                 />
@@ -102,6 +106,11 @@ const AIBOMStoredTelemetryCharts: FC<AIBOMStoredTelemetryChartsProps> = ({
           onChange={(_event, checked) => {
             setExpanded(checked);
           }}
+        />
+        <FitToDataSwitch
+          id="aibom-detail-telemetry-fit"
+          isChecked={fitToData}
+          onChange={setFitToData}
         />
       </GridItem>
       <Section title={t('Hardware Telemetry')}>

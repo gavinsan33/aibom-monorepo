@@ -24,6 +24,7 @@ import {
 import type { StoredTelemetry } from '../../types/telemetrySeries';
 import { runColor } from '../../utils/runColors';
 import Section from '../detail/Section';
+import FitToDataSwitch from './FitToDataSwitch';
 import TelemetryCompareChart from './TelemetryCompareChart';
 import type { CompareChartRun } from './TelemetryCompareChart';
 import { useStoredTelemetry } from './useStoredTelemetry';
@@ -60,7 +61,13 @@ function buildChartSpecs(
       const metric = run?.metrics[metricKey];
       if (!run || !metric) return;
       unit ??= metric.unit;
-      runs.push({ name: runNames[colorIndex], colorIndex, metric, windowStart: run.window.start });
+      runs.push({
+        name: runNames[colorIndex],
+        colorIndex,
+        metric,
+        windowStart: run.window.start,
+        windowEnd: run.window.end,
+      });
     });
     return runs.length > 0
       ? [{ key: `${keyPrefix}-${metricKey}`, title: labels[metricKey] ?? metricKey, unit, runs }]
@@ -71,6 +78,7 @@ function buildChartSpecs(
 const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, runNames }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const [expanded, setExpanded] = useState(false);
+  const [fitToData, setFitToData] = useState(false);
   const { loading, byItem, mismatched } = useStoredTelemetry(items);
 
   const { hardware, inference } = useMemo(
@@ -122,6 +130,7 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
                   runs={spec.runs}
                   unit={spec.unit}
                   expanded={expanded}
+                  fitToData={fitToData}
                 />
               </CardBody>
             </Card>
@@ -168,6 +177,11 @@ const AIBOMCompareTelemetryTab: FC<AIBOMCompareTelemetryTabProps> = ({ items, ru
           onChange={(_event, checked) => {
             setExpanded(checked);
           }}
+        />
+        <FitToDataSwitch
+          id="aibom-compare-telemetry-fit"
+          isChecked={fitToData}
+          onChange={setFitToData}
         />
       </GridItem>
       <Section title={t('Hardware Telemetry')}>

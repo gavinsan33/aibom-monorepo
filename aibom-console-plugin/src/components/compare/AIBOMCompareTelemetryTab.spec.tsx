@@ -1,6 +1,6 @@
 import { createHash, webcrypto } from 'crypto';
 import { useK8sWatchResources } from '@openshift-console/dynamic-plugin-sdk';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { AIBOMResource } from '../../types/aibom';
 import AIBOMCompareTelemetryTab from './AIBOMCompareTelemetryTab';
 
@@ -83,6 +83,20 @@ describe('AIBOMCompareTelemetryTab', () => {
       name: 'a-telemetry-ab12',
       isList: false,
     });
+  });
+
+  it('warns that charts no longer share a time axis once fitted to their own data', async () => {
+    mockSeriesObjects();
+    render(
+      <AIBOMCompareTelemetryTab
+        items={[run('a', 1, true), run('b', 1, true)]}
+        runNames={['run-a', 'run-b']}
+      />,
+    );
+    const toggle = await screen.findByLabelText('Fit each chart to its data');
+    expect(screen.queryByText(/no longer share a time axis/)).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText(/no longer share a time axis/)).toBeInTheDocument();
   });
 
   it('finishes loading, instead of spinning forever, on a payload with a null metric and series', async () => {
