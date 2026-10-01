@@ -19,6 +19,7 @@ export const getCollectedAt = (a: AIBOMResource): string => a.spec?.collectedAt 
 
 // Additional accessors for the Compare view's field table (mirrors oc-aibom's Diff field list).
 export const getModelVersion = (a: AIBOMResource): string => a.spec?.data?.model?.version ?? '';
+export const getModelRevision = (a: AIBOMResource): string => a.spec?.data?.model?.revision ?? '';
 export const getDtype = (a: AIBOMResource): string => a.spec?.data?.model?.dtype ?? '';
 export const getDeclaredDatasetName = (a: AIBOMResource): string =>
   a.spec?.data?.dataset?.declared?.name ?? '';

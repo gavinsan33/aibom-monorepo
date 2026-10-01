@@ -50,6 +50,11 @@ export interface AIBOMData {
     quantization?: string;
     quantization_bits?: number | string;
     dtype?: string;
+    /** Only present for a pre-pulled pvc:// model whose own files the webhook could read. */
+    name_declared_via?: string;
+    revision?: string;
+    base_model?: string;
+    size_bytes?: number | string;
     speculative_decoding?: {
       enabled?: boolean;
       draft_model?: string;

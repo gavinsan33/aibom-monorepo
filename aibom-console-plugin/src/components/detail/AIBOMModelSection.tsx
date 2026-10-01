@@ -15,12 +15,23 @@ const AIBOMModelSection: FC<AIBOMModelSectionProps> = ({ model }) => {
   if (!model) return null;
   const hasBits = toFlexNumber(model.quantization_bits) !== undefined;
   const spec = model.speculative_decoding;
+  const sizeBytes = toFlexNumber(model.size_bytes);
 
   return (
     <Section title={t('Model')} md={6}>
       <DescriptionList isHorizontal isCompact columnModifier={{ default: '1Col', md: '2Col' }}>
-        <Field label={t('Name')}>{model.name}</Field>
+        <Field label={t('Name')}>
+          {model.name &&
+            (model.name_declared_via
+              ? `${model.name} (${t('via')}: ${model.name_declared_via})`
+              : model.name)}
+        </Field>
         <Field label={t('Version')}>{model.version}</Field>
+        <Field label={t('Revision')}>{model.revision}</Field>
+        <Field label={t('Base model')}>{model.base_model}</Field>
+        <Field label={t('Size')}>
+          {sizeBytes !== undefined && sizeBytes > 0 && `${(sizeBytes / 1e9).toFixed(1)} GB`}
+        </Field>
         <Field label={t('Architecture')}>{model.architecture}</Field>
         <Field label={t('Framework')}>{model.framework}</Field>
         <Field label={t('Dtype')}>{model.dtype}</Field>
