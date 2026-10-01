@@ -73,7 +73,9 @@ tab shares the same x range, `[0, longest window]` (`sharedElapsedMax`), rather 
 auto-fitting its own data: metrics start reporting at different times (vLLM's only
 once the server is up, TTFT only once a request completes), and auto-fitting stretched
 those late series across the full width, so the same x position meant different times
-in different charts. Each run is one
+in different charts. The "Fit each chart to its data" switch (off by default) opts back
+into per-chart auto-fit to zoom into a late-starting series, with a note that the charts
+then no longer line up. Each run is one
 aggregate line by default; the "Show individual pods and GPUs" switch expands to
 per-series lines (same color, dashed variants). Both tabs are gated by the same
 feature flag (below).

@@ -24,6 +24,8 @@ interface TelemetryCompareChartProps {
   unit?: string;
   /** Draw each run's pods/GPUs individually instead of one aggregate line. */
   expanded: boolean;
+  /** Zoom to this chart's own data instead of the shared x range. */
+  fitToData?: boolean;
 }
 
 /**
@@ -33,7 +35,13 @@ interface TelemetryCompareChartProps {
  * (0 to the longest window), so a metric that began reporting late shows as a
  * short line instead of being stretched to fill the width.
  */
-const TelemetryCompareChart: FC<TelemetryCompareChartProps> = ({ title, runs, unit, expanded }) => {
+const TelemetryCompareChart: FC<TelemetryCompareChartProps> = ({
+  title,
+  runs,
+  unit,
+  expanded,
+  fitToData = false,
+}) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const lines = useMemo(
     () =>
@@ -43,7 +51,8 @@ const TelemetryCompareChart: FC<TelemetryCompareChartProps> = ({ title, runs, un
     [runs, expanded],
   );
 
-  const xMax = useMemo(() => sharedElapsedMax(runs), [runs]);
+  const sharedMax = useMemo(() => sharedElapsedMax(runs), [runs]);
+  const xMax = fitToData ? undefined : sharedMax;
 
   if (lines.every((line) => line.points.length === 0)) {
     return <Content component="p">{t('No data was stored for this metric')}</Content>;
