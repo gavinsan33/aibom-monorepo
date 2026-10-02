@@ -98,6 +98,7 @@
   "Namespace": "Namespace",
   "No AIBOMs found": "No AIBOMs found",
   "No data was stored for this metric": "No data was stored for this metric",
+  "No Git source was detected for this workload.": "No Git source was detected for this workload.",
   "No GPU series were stored for this run. Recorded GPU statistics are in the Hardware Performance section of the Overview tab.": "No GPU series were stored for this run. Recorded GPU statistics are in the Hardware Performance section of the Overview tab.",
   "No hardware telemetry is stored for the compared runs.": "No hardware telemetry is stored for the compared runs.",
   "No hardware telemetry was stored for this run.": "No hardware telemetry was stored for this run.",
