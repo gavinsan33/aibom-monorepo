@@ -20,13 +20,13 @@ const AIBOMSourceSection: FC<AIBOMSourceSectionProps> = ({ sourceCode }) => {
         <Content component="p">{t('No Git source was detected for this workload.')}</Content>
       ) : (
         <DescriptionList isHorizontal isCompact>
-          <Field label={t('Repository')}>{sourceCode?.git_repository}</Field>
+          <Field label={t('Repository')}>{sourceCode.git_repository}</Field>
           <Field label={t('Commit')}>
-            {sourceCode?.git_commit && (
+            {sourceCode.git_commit && (
               <>
-                {sourceCode?.git_commit} (branch: {sourceCode?.git_branch ?? '—'}, dirty:{' '}
-                {sourceCode?.dirty ? <Label color="yellow">{t('true')}</Label> : t('false')}, via:{' '}
-                {sourceCode?.declared_via ?? '—'})
+                {sourceCode.git_commit} (branch: {sourceCode.git_branch ?? '—'}, dirty:{' '}
+                {sourceCode.dirty ? <Label color="yellow">{t('true')}</Label> : t('false')}, via:{' '}
+                {sourceCode.declared_via ?? '—'})
               </>
             )}
           </Field>
