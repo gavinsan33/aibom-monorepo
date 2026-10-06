@@ -1,0 +1,36 @@
+[
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/aiboms",
+      "component": { "$codeRef": "AIBOMListPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/aiboms/:namespace/:name",
+      "component": { "$codeRef": "AIBOMDetailPage" }
+    }
+  },
+  {
+    "type": "console.page/route",
+    "properties": {
+      "exact": true,
+      "path": "/aiboms/compare",
+      "component": { "$codeRef": "AIBOMComparePage" }
+    }
+  },
+  {
+    "type": "console.navigation/href",
+    "properties": {
+      "id": "aiboms",
+      "name": "%plugin__aibom-console-plugin~AIBOMs%",
+      "href": "/aiboms",
+      "perspective": "admin",
+      "section": "home"
+    }
+  }
+]

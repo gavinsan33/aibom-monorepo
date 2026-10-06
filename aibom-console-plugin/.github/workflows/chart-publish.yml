@@ -1,0 +1,35 @@
+name: Publish chart to Quay
+
+# Mirrors the container images' own auto-build story (see README's "Setting Up
+# Quay Auto-Build"): images update automatically on every push to main via
+# Quay's own GitHub build trigger, but that trigger only knows how to run a
+# `docker build` — it can't drive `helm package`/`helm push`. This workflow is
+# the equivalent for the chart, restricted to pushes that land on main (i.e.
+# merges, not every commit on a feature branch) and only when chart content
+# actually changed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "charts/aibom-console-plugin/**"
+
+jobs:
+  chart-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - uses: extractions/setup-just@v2
+
+      # Robot account, not a personal Quay login — scope it to push-only access
+      # on the aibom-console-plugin repo, same as any other CI credential.
+      - name: Log in to Quay
+        run: |
+          helm registry login quay.io \
+            --username "${{ secrets.QUAY_ROBOT_USERNAME }}" \
+            --password "${{ secrets.QUAY_ROBOT_TOKEN }}"
+
+      - name: Publish chart
+        run: just chart-push

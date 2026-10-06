@@ -1,0 +1,168 @@
+# A second run of the same job as run1, with deliberately different config
+# (quantization, GPU count/type, learning rate) and a dataset that DOES NOT
+# match its declared name -- useful for exercising the List view's
+# --drift-only-equivalent filter and the Compare view's divergent-row
+# highlighting against run1.
+apiVersion: aibom.io/v1alpha1
+kind: AIBOM
+metadata:
+  name: aibom-granite-lora-finetune-run2
+  namespace: project-gavin-test
+  labels:
+    aibom.io/instrumented: "true"
+spec:
+  jobName: granite-lora-finetune
+  modelName: ibm-granite/granite-3.3-8b-instruct
+  experimentIntent: sft
+  collectedAt: "2026-09-22T09:15:47Z"
+  data:
+    experiment_intent: sft
+    experiment_intent_declared_via: annotation
+    experiment_name: granite-lora-finetune-run2
+    experiment_description: LoRA fine-tune of granite-3.3-8b, higher LR + int8
+    source_code:
+      git_repository: example-org/granite-finetune-recipes
+      git_commit: 1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d
+      git_branch: feature/higher-lr
+      declared_via: git_directory
+      dirty: true
+    execution_metadata:
+      job_id: granite-lora-finetune-run2
+      namespace: project-gavin-test
+      duration_seconds: 4890
+      status: OOMKilled
+      pods:
+        - pod_name: granite-lora-finetune-run2-worker-0
+          pod_uid: 8a1b2c3d-0003-4a1b-9c1d-000000000003
+          pod_namespace: project-gavin-test
+          pod_ip: 10.128.4.31
+          node_name: gpu-node-03
+          start_time: "2026-09-22T07:53:17Z"
+          status: OOMKilled
+          exit_code: 137
+    model:
+      name: ibm-granite/granite-3.3-8b-instruct
+      version: "3.3"
+      architecture: granite
+      framework: pytorch
+      quantization: int8
+      quantization_bits: 8
+      dtype: bfloat16
+    dataset:
+      declared:
+        name: customer-support-tickets
+        version: "1.2"
+        source: s3://example-datasets/customer-support-tickets
+        license: CC-BY-4.0
+        declared_via: annotation
+      auto_detected:
+        - dataset_name: customer-support-tickets-v2-experimental
+          version: "2.0-rc1"
+          license: CC-BY-4.0
+          matches_declared: false
+          seen_via: ["datasets.load_dataset", "torch.utils.data.DataLoader"]
+    training:
+      optimizer: adamw
+      learning_rate: 0.0008
+      batch_size: 4
+      epochs: 3
+      random_seed: 42
+      parallelization_strategy: fsdp
+    fine_tuning:
+      adaptation_method: qlora
+      lora_rank: 32
+      lora_alpha: 64
+    environment:
+      gpu_type: NVIDIA H100 80GB HBM3
+      gpu_count: 1
+      cpu_model: AMD EPYC 7763
+      cpu_cores: 16
+      memory_gb: 128
+      numa_nodes: 1
+      cuda_version: "12.5"
+      driver_version: "555.42.02"
+      framework_version: "2.4.0"
+      kernel_version: 5.14.0-427.el9.x86_64
+    resource_utilization:
+      collected_at: "2026-09-22T09:15:47Z"
+      summary_includes_cold_start: true
+      metrics:
+        gpu_utilization:
+          unit: "%"
+          min: 55.0
+          max: 99.9
+          avg: 93.7
+          p95: 99.0
+          segments:
+            first_third: 70.0
+            middle_third: 98.0
+            last_third: 99.5
+        gpu_memory_used:
+          unit: MiB
+          min: 50000
+          max: 81900
+          avg: 79000
+          p95: 81800
+          limit: 81920
+          segments:
+            first_third: 60000
+            middle_third: 80000
+            last_third: 81900
+        gpu_power:
+          unit: W
+          min: 210
+          max: 340
+          avg: 310
+          p95: 335
+          segments:
+            first_third: 250
+            middle_third: 320
+            last_third: 330
+        cpu_usage:
+          unit: cores
+          min: 2.0
+          max: 15.5
+          avg: 9.8
+          p95: 14.9
+          limit: 16
+          segments:
+            first_third: 6.0
+            middle_third: 11.0
+            last_third: 13.0
+        memory_usage:
+          unit: GB
+          min: 30.0
+          max: 127.5
+          avg: 98.2
+          p95: 126.0
+          limit: 128
+          segments:
+            first_third: 50.0
+            middle_third: 110.0
+            last_third: 127.0
+        network_receive:
+          unit: Mbps
+          min: 3.0
+          max: 150.0
+          avg: 35.0
+          p95: 120.0
+          segments:
+            first_third: 60.0
+            middle_third: 20.0
+            last_third: 25.0
+        network_transmit:
+          unit: Mbps
+          min: 2.5
+          max: 140.0
+          avg: 30.0
+          p95: 110.0
+          segments:
+            first_third: 55.0
+            middle_third: 18.0
+            last_third: 22.0
+    _metadata:
+      aibom_version: v1alpha1
+      generated_at: "2026-09-22T09:15:47Z"
+      generator: postprocess.py/0.9.0
+      schema_compliance: full
+      dataset_detection: runtime_detector.py
