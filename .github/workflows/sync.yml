@@ -1,0 +1,35 @@
+name: Sync from source repos
+
+# Read-only mirror: the source repos notify this repo (repository_dispatch) when
+# their default branch changes. The schedule is a fallback in case a notification is missed.
+on:
+  repository_dispatch:
+    types: [source-updated]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Install git-filter-repo
+        run: pip install git-filter-repo
+      - name: Sync and push
+        run: |
+          ./sync.sh
+          git push origin HEAD:main
