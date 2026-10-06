@@ -1,0 +1,1132 @@
+package watcher
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gavinsan33/aibom-webhook-service/internal/aibomdata"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+)
+
+const (
+	LabelEnabled                 = "aibom.io/enabled"
+	LabelInstrumented            = "aibom.io/instrumented"
+	LabelPostprocessFor          = aibomdata.LabelPostprocessFor
+	AnnotationPostprocess        = "aibom.io/postprocess-job"
+	AnnotationAIBOMCollected     = "aibom.io/aibom-collected"
+	AnnotationPostprocessRetries = "aibom.io/postprocess-retries"
+
+	annotationPrefix = "aibom.io/"
+
+	instrumentedByAnnotationKey = "instrumented-by"
+	storageInfoAnnotationKey    = "storage-info"
+
+	// maxPostprocessRetries caps how many times postprocess-job creation is
+	// retried (once per resync, see resyncPeriod) before giving up and removing
+	// the finalizer anyway — otherwise a permanently failing case (bad image,
+	// exhausted quota) would keep the Job/Pod stuck un-deletable forever.
+	maxPostprocessRetries = 5
+
+	initContainerName = "aibom-discovery"
+
+	finalizerName = "aibom.io/log-extraction"
+
+	// podFinalizerName is distinct from finalizerName so that `kubectl get -o yaml`
+	// self-documents which mechanism (Job-level vs Pod-level) placed a given finalizer.
+	podFinalizerName = "aibom.io/log-extraction-pod"
+
+	postprocessContainerName      = "aibom-postprocess"
+	postprocessServiceAccountName = aibomdata.PostprocessServiceAccountName
+
+	// serviceCAConfigMapName is created per workload namespace by the
+	// aibom-workload-namespace chart (service.beta.openshift.io/inject-cabundle
+	// annotation), the same way gpu-quota-operator's service-ca ConfigMap works.
+	// Mounted as optional: on a cluster/chart version where it doesn't exist yet
+	// (or a plain-HTTP dev Prometheus that doesn't need it), the mount resolves to
+	// an empty directory instead of blocking the pod, and postprocess.py's own
+	// missing-file fallback (system trust store) takes it from there.
+	serviceCAConfigMapName = "aibom-service-ca"
+	serviceCAVolumeName    = "service-ca"
+	serviceCAMountPath     = "/etc/aibom-postprocess/service-ca"
+
+	// Mounted as optional for the same reason as the service-ca ConfigMap above:
+	// a namespace whose aibom-workload-namespace chart install predates this
+	// Secret's addition just gets an unsigned AIBOM rather than a blocked pod.
+	compiledSigningVolumeName = "compiled-signing-key"
+	compiledSigningMountPath  = "/etc/aibom-postprocess/compiled-signing"
+
+	resyncPeriod      = 30 * time.Second
+	maxJobNameLength  = aibomdata.MaxJobNameLength
+	postprocessSuffix = aibomdata.PostprocessSuffix
+	configMapSuffix   = aibomdata.ConfigMapSuffix
+)
+
+// Config bundles the watcher's telemetry-related settings — grouped into a struct
+// rather than four same-typed positional strings in New(), which would otherwise be
+// easy to transpose by accident (e.g. swapping prometheusURL and grafanaURL) with no
+// compiler error to catch it.
+type Config struct {
+	PostprocessImage string
+	PrometheusURL    string
+	// GrafanaURL and GrafanaDatasourceUID are only used to build a clickable Grafana
+	// Explore deep link into resource_utilization.grafana_links — actual telemetry
+	// queries always go straight to PrometheusURL (see postprocess.py). Either being
+	// empty just omits the link for that pod's telemetry rather than erroring.
+	GrafanaURL           string
+	GrafanaDatasourceUID string
+	// DebugKeepPostprocessJobs skips the usual cleanup of a succeeded postprocess
+	// Job/data ConfigMap (see collectAIBOM) — for inspecting postprocess pod
+	// logs/exit state or the data ConfigMap's contents after the fact. Leaks one
+	// of each per completed workload indefinitely; not meant for routine
+	// production use.
+	DebugKeepPostprocessJobs bool
+	// DebugTelemetryAllPods is passed through to the postprocess Job as
+	// AIBOM_DEBUG_TELEMETRY_ALL_PODS, bypassing postprocess.py's "skip pods with
+	// no detected GPU" telemetry check. Intended for local testing against a mock
+	// cluster (e.g. kind) with no real GPU hardware, where nvidia-smi always
+	// reports zero GPUs and telemetry collection would otherwise never run.
+	DebugTelemetryAllPods bool
+}
+
+type Watcher struct {
+	clientset                kubernetes.Interface
+	postprocessImage         string
+	prometheusURL            string
+	grafanaURL               string
+	grafanaDatasourceUID     string
+	debugKeepPostprocessJobs bool
+	debugTelemetryAllPods    bool
+	factory                  informers.SharedInformerFactory
+	// podFactory is a separate, server-side label-selector-scoped factory for the Pod
+	// informer. Unlike Jobs (which have no label capturing "qualifies for
+	// postprocessing", so watch-everything-then-filter is unavoidable), pods are far
+	// higher cardinality cluster-wide and the webhook already applies LabelInstrumented
+	// before this feature runs, so scoping the watch server-side avoids needless
+	// watch-cache load from every unrelated pod in the cluster.
+	podFactory informers.SharedInformerFactory
+}
+
+func New(clientset kubernetes.Interface, cfg Config) *Watcher {
+	w := &Watcher{
+		clientset:                clientset,
+		postprocessImage:         cfg.PostprocessImage,
+		prometheusURL:            cfg.PrometheusURL,
+		grafanaURL:               cfg.GrafanaURL,
+		grafanaDatasourceUID:     cfg.GrafanaDatasourceUID,
+		debugKeepPostprocessJobs: cfg.DebugKeepPostprocessJobs,
+		debugTelemetryAllPods:    cfg.DebugTelemetryAllPods,
+		factory:                  informers.NewSharedInformerFactory(clientset, resyncPeriod),
+		podFactory: informers.NewSharedInformerFactoryWithOptions(
+			clientset, resyncPeriod,
+			informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+				opts.LabelSelector = fmt.Sprintf("%s=true,!batch.kubernetes.io/job-name", LabelInstrumented)
+			}),
+		),
+	}
+
+	w.factory.Batch().V1().Jobs().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    w.onJobEvent,
+		UpdateFunc: func(_, newObj interface{}) { w.onJobEvent(newObj) },
+		DeleteFunc: w.onJobEvent,
+	})
+
+	w.podFactory.Core().V1().Pods().Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    w.onPodEvent,
+		UpdateFunc: func(_, newObj interface{}) { w.onPodEvent(newObj) },
+		DeleteFunc: w.onPodEvent,
+	})
+
+	// Ensure the namespace informer is created so it syncs with the factory.
+	w.factory.Core().V1().Namespaces().Informer()
+
+	return w
+}
+
+func (w *Watcher) Start(ctx context.Context) error {
+	w.factory.Start(ctx.Done())
+	w.podFactory.Start(ctx.Done())
+
+	synced := w.factory.WaitForCacheSync(ctx.Done())
+	for gvr, ok := range synced {
+		if !ok {
+			return fmt.Errorf("informer failed to sync: %v", gvr)
+		}
+	}
+	podSynced := w.podFactory.WaitForCacheSync(ctx.Done())
+	for gvr, ok := range podSynced {
+		if !ok {
+			return fmt.Errorf("pod informer failed to sync: %v", gvr)
+		}
+	}
+
+	log.Println("watcher started, watching for completed instrumented Jobs and long-running instrumented Pods")
+	<-ctx.Done()
+	w.factory.Shutdown()
+	w.podFactory.Shutdown()
+	return nil
+}
+
+func (w *Watcher) onJobEvent(obj interface{}) {
+	job, ok := obj.(*batchv1.Job)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		job, ok = tombstone.Obj.(*batchv1.Job)
+		if !ok {
+			return
+		}
+	}
+
+	if !w.isNamespaceEnabled(job.Namespace) {
+		return
+	}
+
+	if job.Labels[LabelPostprocessFor] != "" {
+		alreadyCollected := job.Annotations != nil && job.Annotations[AnnotationAIBOMCollected] != ""
+		if w.isJobFinished(job) && !alreadyCollected {
+			w.collectAIBOM(context.TODO(), job)
+		}
+		return
+	}
+
+	readyForPostprocess := w.isJobFinished(job) || job.DeletionTimestamp != nil
+
+	if !readyForPostprocess {
+		// Path A: job is new/running — add finalizer if it qualifies
+		if hasFinalizer(job) {
+			return
+		}
+		if !w.shouldPostprocess(job) {
+			return
+		}
+		if err := w.addFinalizer(context.TODO(), job); err != nil {
+			log.Printf("warning: could not add finalizer to %s/%s: %v", job.Namespace, job.Name, err)
+		}
+		return
+	}
+
+	// Path B: job is complete or being deleted — run postprocessing
+	if job.Annotations != nil && job.Annotations[AnnotationPostprocess] != "" {
+		if hasFinalizer(job) {
+			w.removeFinalizer(context.TODO(), job)
+		}
+		return
+	}
+
+	if !hasFinalizer(job) && !w.isJobFinished(job) {
+		return
+	}
+
+	if !w.shouldPostprocess(job) {
+		// This job may still have had a per-job workload identity provisioned
+		// at admission time (the webhook creates one for any Job-owned pod,
+		// regardless of whether the job ends up qualifying for postprocessing
+		// here — see mutator.go's ensurePodWorkloadIdentity). Since this job
+		// will never reach collectAIBOM (the only other place that deletes
+		// it), clean it up here instead of leaking it forever.
+		w.deleteWorkloadIdentity(context.TODO(), job.Namespace, job.Name)
+		if hasFinalizer(job) {
+			w.removeFinalizer(context.TODO(), job)
+		}
+		return
+	}
+
+	if err := w.createPostprocessJob(context.TODO(), job); err != nil {
+		log.Printf("failed to create postprocess job for %s/%s: %v", job.Namespace, job.Name, err)
+		retries := postprocessRetryCount(job.Annotations) + 1
+		if retries >= maxPostprocessRetries {
+			log.Printf("giving up on postprocessing %s/%s after %d retries; removing finalizer", job.Namespace, job.Name, retries)
+			w.deleteWorkloadIdentity(context.TODO(), job.Namespace, job.Name)
+			if hasFinalizer(job) {
+				w.removeFinalizer(context.TODO(), job)
+			}
+			return
+		}
+		// Leave the finalizer in place so the next resync retries postprocess-job
+		// creation instead of cleaning up (and deleting pod logs) with no AIBOM
+		// ever generated.
+		w.setJobPostprocessRetries(context.TODO(), job, retries)
+		return
+	}
+
+	if hasFinalizer(job) {
+		w.removeFinalizer(context.TODO(), job)
+	}
+}
+
+// onPodEvent is the Pod-level equivalent of onJobEvent, for bare/ReplicaSet-owned pods
+// (e.g. KServe InferenceService predictors) that have no owning Job to hang a finalizer
+// on. These pods never "complete" — the only postprocessing trigger is deletion.
+func (w *Watcher) onPodEvent(obj interface{}) {
+	pod, ok := obj.(*corev1.Pod)
+	if !ok {
+		tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+		if !ok {
+			return
+		}
+		pod, ok = tombstone.Obj.(*corev1.Pod)
+		if !ok {
+			return
+		}
+	}
+
+	if !w.isNamespaceEnabled(pod.Namespace) {
+		return
+	}
+
+	// Pods owned by a Job (or a JobSet's Jobs) are handled by onJobEvent's
+	// Job-level finalizer path — the Job controller sets this label on every
+	// pod it creates, so it reliably identifies pods already covered there.
+	if pod.Labels["batch.kubernetes.io/job-name"] != "" {
+		return
+	}
+
+	if pod.Labels[LabelInstrumented] != "true" {
+		return
+	}
+
+	if pod.DeletionTimestamp == nil {
+		// Path A: pod is running — add finalizer if it qualifies
+		if hasPodFinalizer(pod) {
+			return
+		}
+		if !shouldPostprocessPod(pod) {
+			return
+		}
+		if err := w.addPodFinalizer(context.TODO(), pod); err != nil {
+			log.Printf("warning: could not add finalizer to pod %s/%s: %v", pod.Namespace, pod.Name, err)
+		}
+		return
+	}
+
+	// Path B: pod is being deleted — run postprocessing
+	if pod.Annotations != nil && pod.Annotations[AnnotationPostprocess] != "" {
+		if hasPodFinalizer(pod) {
+			w.removePodFinalizer(context.TODO(), pod)
+		}
+		return
+	}
+
+	if !hasPodFinalizer(pod) {
+		// Never qualified while running (or missed the add event) — nothing to do.
+		return
+	}
+
+	if !shouldPostprocessPod(pod) {
+		w.removePodFinalizer(context.TODO(), pod)
+		return
+	}
+
+	if err := w.createPostprocessJobForPod(context.TODO(), pod); err != nil {
+		log.Printf("failed to create postprocess job for pod %s/%s: %v", pod.Namespace, pod.Name, err)
+		retries := postprocessRetryCount(pod.Annotations) + 1
+		if retries >= maxPostprocessRetries {
+			log.Printf("giving up on postprocessing pod %s/%s after %d retries; removing finalizer", pod.Namespace, pod.Name, retries)
+			w.removePodFinalizer(context.TODO(), pod)
+			return
+		}
+		// Leave the finalizer in place so the next resync retries postprocess-job
+		// creation instead of cleaning up (and deleting pod logs) with no AIBOM
+		// ever generated.
+		w.setPodPostprocessRetries(context.TODO(), pod, retries)
+		return
+	}
+
+	w.removePodFinalizer(context.TODO(), pod)
+}
+
+func (w *Watcher) shouldPostprocess(job *batchv1.Job) bool {
+	pods, err := w.getInstrumentedPods(job)
+	if err != nil || len(pods) == 0 {
+		return false
+	}
+	return podsRequestGPU(pods) || len(collectAIBOMAnnotations(job.Annotations)) > 0
+}
+
+func shouldPostprocessPod(pod *corev1.Pod) bool {
+	return podsRequestGPU([]corev1.Pod{*pod}) || len(collectAIBOMAnnotations(pod.Annotations)) > 0
+}
+
+func hasFinalizer(job *batchv1.Job) bool {
+	for _, f := range job.Finalizers {
+		if f == finalizerName {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Watcher) addFinalizer(ctx context.Context, job *batchv1.Job) error {
+	finalizers := append(job.Finalizers, finalizerName)
+	finalizersJSON, _ := json.Marshal(finalizers)
+	patch := fmt.Sprintf(`{"metadata":{"finalizers":%s}}`, finalizersJSON)
+	_, err := w.clientset.BatchV1().Jobs(job.Namespace).Patch(ctx, job.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("add finalizer to %s/%s: %w", job.Namespace, job.Name, err)
+	}
+	log.Printf("added finalizer to %s/%s", job.Namespace, job.Name)
+	return nil
+}
+
+func (w *Watcher) removeFinalizer(ctx context.Context, job *batchv1.Job) {
+	var remaining []string
+	for _, f := range job.Finalizers {
+		if f != finalizerName {
+			remaining = append(remaining, f)
+		}
+	}
+	finalizersJSON, _ := json.Marshal(remaining)
+	if remaining == nil {
+		finalizersJSON = []byte("[]")
+	}
+	patch := fmt.Sprintf(`{"metadata":{"finalizers":%s}}`, finalizersJSON)
+	_, err := w.clientset.BatchV1().Jobs(job.Namespace).Patch(ctx, job.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		log.Printf("warning: could not remove finalizer from %s/%s: %v", job.Namespace, job.Name, err)
+	} else {
+		log.Printf("removed finalizer from %s/%s", job.Namespace, job.Name)
+	}
+}
+
+func hasPodFinalizer(pod *corev1.Pod) bool {
+	for _, f := range pod.Finalizers {
+		if f == podFinalizerName {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Watcher) addPodFinalizer(ctx context.Context, pod *corev1.Pod) error {
+	finalizers := append(pod.Finalizers, podFinalizerName)
+	finalizersJSON, _ := json.Marshal(finalizers)
+	patch := fmt.Sprintf(`{"metadata":{"finalizers":%s}}`, finalizersJSON)
+	_, err := w.clientset.CoreV1().Pods(pod.Namespace).Patch(ctx, pod.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("add finalizer to pod %s/%s: %w", pod.Namespace, pod.Name, err)
+	}
+	log.Printf("added finalizer to pod %s/%s", pod.Namespace, pod.Name)
+	return nil
+}
+
+func (w *Watcher) removePodFinalizer(ctx context.Context, pod *corev1.Pod) {
+	var remaining []string
+	for _, f := range pod.Finalizers {
+		if f != podFinalizerName {
+			remaining = append(remaining, f)
+		}
+	}
+	finalizersJSON, _ := json.Marshal(remaining)
+	if remaining == nil {
+		finalizersJSON = []byte("[]")
+	}
+	patch := fmt.Sprintf(`{"metadata":{"finalizers":%s}}`, finalizersJSON)
+	_, err := w.clientset.CoreV1().Pods(pod.Namespace).Patch(ctx, pod.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		log.Printf("warning: could not remove finalizer from pod %s/%s: %v", pod.Namespace, pod.Name, err)
+	} else {
+		log.Printf("removed finalizer from pod %s/%s", pod.Namespace, pod.Name)
+	}
+}
+
+// postprocessRetryCount reads the current postprocess-job creation retry count
+// from an annotation, defaulting to 0 if absent or unparseable.
+func postprocessRetryCount(annotations map[string]string) int {
+	n, err := strconv.Atoi(annotations[AnnotationPostprocessRetries])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (w *Watcher) setJobPostprocessRetries(ctx context.Context, job *batchv1.Job, n int) {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%d"}}}`, AnnotationPostprocessRetries, n)
+	if _, err := w.clientset.BatchV1().Jobs(job.Namespace).Patch(ctx, job.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		log.Printf("warning: could not record postprocess retry count for %s/%s: %v", job.Namespace, job.Name, err)
+	}
+}
+
+func (w *Watcher) setPodPostprocessRetries(ctx context.Context, pod *corev1.Pod, n int) {
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%d"}}}`, AnnotationPostprocessRetries, n)
+	if _, err := w.clientset.CoreV1().Pods(pod.Namespace).Patch(ctx, pod.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		log.Printf("warning: could not record postprocess retry count for pod %s/%s: %v", pod.Namespace, pod.Name, err)
+	}
+}
+
+func (w *Watcher) isNamespaceEnabled(namespace string) bool {
+	ns, err := w.factory.Core().V1().Namespaces().Lister().Get(namespace)
+	if err != nil {
+		return false
+	}
+	return ns.Labels[LabelEnabled] == "true"
+}
+
+// isJobFinished reports whether the job has reached a terminal state — either
+// succeeded or failed — since both should trigger finalizer removal and
+// cleanup the same way a bare completion would.
+func (w *Watcher) isJobFinished(job *batchv1.Job) bool {
+	for _, c := range job.Status.Conditions {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		if c.Type == batchv1.JobComplete || c.Type == batchv1.JobFailed {
+			return true
+		}
+	}
+	return false
+}
+
+func podsRequestGPU(pods []corev1.Pod) bool {
+	gpuResource := corev1.ResourceName("nvidia.com/gpu")
+	zero := resource.MustParse("0")
+	for i := range pods {
+		for j := range pods[i].Spec.Containers {
+			c := &pods[i].Spec.Containers[j]
+			if q, ok := c.Resources.Limits[gpuResource]; ok && q.Cmp(zero) > 0 {
+				return true
+			}
+			if q, ok := c.Resources.Requests[gpuResource]; ok && q.Cmp(zero) > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (w *Watcher) getInstrumentedPods(job *batchv1.Job) ([]corev1.Pod, error) {
+	pods, err := w.clientset.CoreV1().Pods(job.Namespace).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("batch.kubernetes.io/job-name=%s,%s=true", job.Name, LabelInstrumented),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list pods for job %s/%s: %w", job.Namespace, job.Name, err)
+	}
+	return pods.Items, nil
+}
+
+// extractDataFromPod reads a pod's contribution to the AIBOM data ConfigMap.
+// Discovery, dataset, and storage data are all written directly into dataCM
+// by the aibom-discovery init container (discovery and, for a KServe
+// predictor backed by an S3/MinIO data-connection bucket, storage — see
+// generate_snapshot.py's resolve_inference_service_storage) and the app
+// container's runtime-detector hook (dataset), keyed
+// "discovery-<pod-name>.json"/"dataset-<pod-name>.json"/"storage-<pod-name>.json"
+// rather than scraped from logs — dataCM is nil if the ConfigMap doesn't exist
+// yet (e.g. none of them have run/flushed yet).
+func extractDataFromPod(pod *corev1.Pod, dataCM *corev1.ConfigMap) (discoveryJSON, discoverySig, datasetJSON, datasetSig, storageJSON, storageSig string) {
+	if dataCM != nil {
+		discoveryJSON = dataCM.Data[fmt.Sprintf("discovery-%s.json", pod.Name)]
+		discoverySig = dataCM.Data[fmt.Sprintf("discovery-%s.sig", pod.Name)]
+		datasetJSON = dataCM.Data[fmt.Sprintf("dataset-%s.json", pod.Name)]
+		datasetSig = dataCM.Data[fmt.Sprintf("dataset-%s.sig", pod.Name)]
+		storageJSON = dataCM.Data[fmt.Sprintf("storage-%s.json", pod.Name)]
+		storageSig = dataCM.Data[fmt.Sprintf("storage-%s.sig", pod.Name)]
+	}
+
+	return discoveryJSON, discoverySig, datasetJSON, datasetSig, storageJSON, storageSig
+}
+
+// fetchDiscoverySigningKey reads the per-namespace HMAC key (see
+// aibomdata.DiscoverySigningKeySecretName) that generate_snapshot.py signs
+// discovery-<pod>.json and storage-<pod>.json with -- both are written by
+// that same trusted discovery init container, so they share one key (see
+// generate_snapshot.py's sign_payload). A missing Secret (nil, nil) means
+// the namespace hasn't been upgraded to a chart version carrying
+// signing.yaml yet — callers treat that as "verification unavailable" and
+// pass the data through unverified, rather than dropping it outright, so
+// this is a gradual rollout, not a hard requirement.
+func (w *Watcher) fetchDiscoverySigningKey(ctx context.Context, namespace string) ([]byte, error) {
+	secret, err := w.clientset.CoreV1().Secrets(namespace).Get(ctx, aibomdata.DiscoverySigningKeySecretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secret.Data[aibomdata.DiscoverySigningKeyDataKey], nil
+}
+
+// fetchDatasetSigningKey is fetchDiscoverySigningKey's counterpart for the
+// separate dataset-signing key (see aibomdata.DatasetSigningKeySecretName)
+// that dataset_sidecar.py signs dataset-<pod>.json with -- kept as its own
+// Secret rather than reusing the discovery key, since the sidecar and the
+// discovery init container are different processes with different inputs.
+func (w *Watcher) fetchDatasetSigningKey(ctx context.Context, namespace string) ([]byte, error) {
+	secret, err := w.clientset.CoreV1().Secrets(namespace).Get(ctx, aibomdata.DatasetSigningKeySecretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return secret.Data[aibomdata.DatasetSigningKeyDataKey], nil
+}
+
+// verifySignature reports whether sigHex is a valid HMAC-SHA256 of payload
+// under key. Used for both discovery-<pod>.json and storage-<pod>.json,
+// which share one key (see fetchDiscoverySigningKey). An empty/missing
+// signature never verifies — a pod whose application container overwrote
+// one of these keys without also producing a valid .sig (impossible
+// without the key, which is never mounted into an app container) is
+// exactly the forgery this exists to catch.
+func verifySignature(key []byte, payload, sigHex string) bool {
+	if sigHex == "" {
+		return false
+	}
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return false
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return hmac.Equal(sig, mac.Sum(nil))
+}
+
+// internalAnnotationKeys holds aibom.io/ annotation keys (prefix stripped) that are
+// bookkeeping rather than user-supplied AIBOM metadata, and so must be excluded from
+// collectAIBOMAnnotations.
+var internalAnnotationKeys = map[string]bool{
+	strings.TrimPrefix(LabelInstrumented, annotationPrefix):            true,
+	instrumentedByAnnotationKey:                                        true,
+	strings.TrimPrefix(AnnotationPostprocess, annotationPrefix):        true,
+	storageInfoAnnotationKey:                                           true,
+	strings.TrimPrefix(AnnotationPostprocessRetries, annotationPrefix): true,
+}
+
+// collectAIBOMAnnotations returns annotations with the aibom.io/ prefix stripped,
+// excluding internal bookkeeping keys.
+func collectAIBOMAnnotations(annotations map[string]string) map[string]string {
+	result := make(map[string]string)
+	for key, value := range annotations {
+		if strings.HasPrefix(key, annotationPrefix) {
+			stripped := strings.TrimPrefix(key, annotationPrefix)
+			if stripped != "" && !internalAnnotationKeys[stripped] {
+				result[stripped] = value
+			}
+		}
+	}
+	return result
+}
+
+func (w *Watcher) createDataConfigMap(ctx context.Context, namespace, configMapName, jobName string, discoveries []string, datasets []string, annotations map[string]string, containersJSON, storageJSON string) error {
+	// Build discovery data: array of discovery objects
+	var discoveryArray []json.RawMessage
+	for _, d := range discoveries {
+		if d != "" {
+			discoveryArray = append(discoveryArray, json.RawMessage(d))
+		}
+	}
+
+	discoveryData := "[]"
+	if len(discoveryArray) > 0 {
+		bytes, err := json.Marshal(discoveryArray)
+		if err == nil {
+			discoveryData = string(bytes)
+		}
+	}
+
+	// Merge dataset data
+	datasetData := mergeDatasets(datasets)
+
+	annotationsJSON, _ := json.Marshal(annotations)
+
+	if storageJSON == "" {
+		storageJSON = "{}"
+	}
+
+	aggregateData := map[string]string{
+		"discovery.json":   discoveryData,
+		"dataset.json":     datasetData,
+		"annotations.json": string(annotationsJSON),
+		"containers.json":  containersJSON,
+		"storage.json":     storageJSON,
+	}
+
+	// The pods themselves may have already created this ConfigMap (writing their
+	// own "discovery-<pod>.json" keys directly, see extractDataFromPod) before the
+	// workload completed. Merge the aggregate keys in rather than blindly Create,
+	// which would silently no-op on AlreadyExists and never add them.
+	existing, err := w.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			return fmt.Errorf("get configmap %s: %w", configMapName, err)
+		}
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      configMapName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					LabelPostprocessFor: jobName,
+				},
+			},
+			Data: aggregateData,
+		}
+		if _, err := w.clientset.CoreV1().ConfigMaps(namespace).Create(ctx, cm, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+			return fmt.Errorf("create configmap %s: %w", configMapName, err)
+		}
+		return nil
+	}
+
+	if existing.Data == nil {
+		existing.Data = map[string]string{}
+	}
+	for k, v := range aggregateData {
+		existing.Data[k] = v
+	}
+	if existing.Labels == nil {
+		existing.Labels = map[string]string{}
+	}
+	existing.Labels[LabelPostprocessFor] = jobName
+	if _, err := w.clientset.CoreV1().ConfigMaps(namespace).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("update configmap %s: %w", configMapName, err)
+	}
+	return nil
+}
+
+// mergeDatasets combines multiple dataset JSON strings into one.
+func mergeDatasets(datasets []string) string {
+	type datasetFile struct {
+		Datasets    []json.RawMessage      `json:"datasets,omitempty"`
+		RuntimeInfo map[string]interface{} `json:"runtime_info,omitempty"`
+	}
+
+	merged := datasetFile{
+		RuntimeInfo: make(map[string]interface{}),
+	}
+
+	for _, raw := range datasets {
+		if raw == "" {
+			continue
+		}
+		var df datasetFile
+		if err := json.Unmarshal([]byte(raw), &df); err != nil {
+			continue
+		}
+		merged.Datasets = append(merged.Datasets, df.Datasets...)
+		for k, v := range df.RuntimeInfo {
+			if _, exists := merged.RuntimeInfo[k]; !exists {
+				merged.RuntimeInfo[k] = v
+			}
+		}
+	}
+
+	if len(merged.Datasets) == 0 && len(merged.RuntimeInfo) == 0 {
+		return "{}"
+	}
+
+	bytes, err := json.Marshal(merged)
+	if err != nil {
+		return "{}"
+	}
+	return string(bytes)
+}
+
+// buildPostprocessInputs reads the discovery, dataset, and storage data the
+// pods themselves already wrote into the data ConfigMap, and serializes
+// container command/args info for CLI-based model detection.
+func (w *Watcher) buildPostprocessInputs(ctx context.Context, namespace, configMapName string, pods []corev1.Pod) (discoveries, datasets []string, containersJSON, storageJSON string) {
+	dataCM, err := w.clientset.CoreV1().ConfigMaps(namespace).Get(ctx, configMapName, metav1.GetOptions{})
+	if err != nil {
+		if !errors.IsNotFound(err) {
+			log.Printf("warning: could not read data configmap %s/%s: %v", namespace, configMapName, err)
+		}
+		dataCM = nil
+	}
+
+	signingKey, err := w.fetchDiscoverySigningKey(ctx, namespace)
+	if err != nil {
+		log.Printf("warning: could not read discovery signing key in namespace %s: %v", namespace, err)
+	}
+	datasetSigningKey, err := w.fetchDatasetSigningKey(ctx, namespace)
+	if err != nil {
+		log.Printf("warning: could not read dataset signing key in namespace %s: %v", namespace, err)
+	}
+
+	for _, pod := range pods {
+		disc, discSig, ds, dsSig, storage, storageSig := extractDataFromPod(&pod, dataCM)
+		if disc != "" && signingKey != nil && !verifySignature(signingKey, disc, discSig) {
+			log.Printf("warning: dropping unverified discovery data for pod %s/%s (missing or invalid signature)", namespace, pod.Name)
+			disc = ""
+		}
+		if storage != "" && signingKey != nil && !verifySignature(signingKey, storage, storageSig) {
+			log.Printf("warning: dropping unverified storage data for pod %s/%s (missing or invalid signature)", namespace, pod.Name)
+			storage = ""
+		}
+		if ds != "" && datasetSigningKey != nil && !verifySignature(datasetSigningKey, ds, dsSig) {
+			log.Printf("warning: dropping unverified dataset data for pod %s/%s (missing or invalid signature)", namespace, pod.Name)
+			ds = ""
+		}
+		discoveries = append(discoveries, disc)
+		datasets = append(datasets, ds)
+		if storageJSON == "" && storage != "" {
+			storageJSON = storage
+		}
+	}
+	if storageJSON == "" {
+		storageJSON = "{}"
+	}
+
+	type containerInfo struct {
+		PodName string   `json:"pod_name"`
+		Name    string   `json:"name"`
+		Image   string   `json:"image"`
+		ImageID string   `json:"image_id"`
+		Command []string `json:"command"`
+		Args    []string `json:"args"`
+		// TerminatedReason/ExitCode come from the live Pod object read here at
+		// postprocess time (unlike discovery/dataset data, which the init
+		// container/app process captured at pod startup and can't know how the
+		// pod eventually ended) -- e.g. "OOMKilled", "Completed", "Error". Only
+		// set once the container has actually terminated; omitted for a
+		// container the API never reported a terminated state for.
+		TerminatedReason string `json:"terminated_reason,omitempty"`
+		ExitCode         *int32 `json:"exit_code,omitempty"`
+		// MemoryLimitBytes/CPULimitMillis come from Spec.Containers[].Resources.Limits --
+		// known at pod-creation time, unlike the terminated fields above -- so
+		// postprocess.py can report telemetry usage against the ceiling that
+		// actually governed it (e.g. "OOMKilled" alongside "used 8GB of an 8GB
+		// limit"). nil when the container has no limit set for that resource,
+		// a real and common case, not a zero value.
+		MemoryLimitBytes *int64 `json:"memory_limit_bytes,omitempty"`
+		CPULimitMillis   *int64 `json:"cpu_limit_millis,omitempty"`
+	}
+	var containers []containerInfo
+	for _, pod := range pods {
+		// ImageID (the resolved digest, e.g. "registry/repo@sha256:...") comes from
+		// ContainerStatuses, not Spec.Containers -- Spec only has the mutable tag the
+		// pod was created with. Git-provenance detection in postprocess.py keys off
+		// this digest specifically so a re-tagged image can't spoof the commit labels
+		// baked onto the original build (see CLAUDE.md's git provenance section).
+		imageIDs := make(map[string]string, len(pod.Status.ContainerStatuses))
+		terminatedReasons := make(map[string]string, len(pod.Status.ContainerStatuses))
+		exitCodes := make(map[string]int32, len(pod.Status.ContainerStatuses))
+		for _, cs := range pod.Status.ContainerStatuses {
+			imageIDs[cs.Name] = cs.ImageID
+			if cs.State.Terminated != nil {
+				terminatedReasons[cs.Name] = cs.State.Terminated.Reason
+				exitCodes[cs.Name] = cs.State.Terminated.ExitCode
+			}
+		}
+		for _, c := range pod.Spec.Containers {
+			ci := containerInfo{
+				PodName: pod.Name,
+				Name:    c.Name,
+				Image:   c.Image,
+				ImageID: imageIDs[c.Name],
+				Command: c.Command,
+				Args:    c.Args,
+			}
+			if reason, ok := terminatedReasons[c.Name]; ok {
+				ci.TerminatedReason = reason
+				exitCode := exitCodes[c.Name]
+				ci.ExitCode = &exitCode
+			}
+			if mem, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+				v := mem.Value()
+				ci.MemoryLimitBytes = &v
+			}
+			if cpu, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+				v := cpu.MilliValue()
+				ci.CPULimitMillis = &v
+			}
+			containers = append(containers, ci)
+		}
+	}
+	raw, _ := json.Marshal(containers)
+	return discoveries, datasets, string(raw), storageJSON
+}
+
+// createPostprocessJobCore creates the data ConfigMap and the postprocess Job for a
+// triggering resource (a Job or a bare Pod), identified only by name/namespace, using
+// data gathered from the given pods. It does not patch AnnotationPostprocess back onto
+// the trigger resource — callers must do that themselves, since the trigger's kind
+// (Job vs Pod) determines which client to patch with.
+func (w *Watcher) createPostprocessJobCore(ctx context.Context, namespace, triggerName string, pods []corev1.Pod, annotations map[string]string) (string, error) {
+	postprocessName := postprocessJobName(triggerName)
+	configMapName := aibomdata.ConfigMapName(triggerName)
+
+	discoveries, datasets, containersJSON, storageJSON := w.buildPostprocessInputs(ctx, namespace, configMapName, pods)
+
+	if err := w.createDataConfigMap(ctx, namespace, configMapName, triggerName, discoveries, datasets, annotations, containersJSON, storageJSON); err != nil {
+		log.Printf("warning: could not create data configmap for %s/%s: %v", namespace, triggerName, err)
+	}
+
+	backoffLimit := int32(3)
+	optional := true
+	runAsNonRoot := true
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := true
+
+	postprocessJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      postprocessName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelPostprocessFor: triggerName,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: &backoffLimit,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						LabelPostprocessFor: triggerName,
+					},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName: postprocessServiceAccountName,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &runAsNonRoot,
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:    postprocessContainerName,
+							Image:   w.postprocessImage,
+							Command: []string{"python3", "/app/postprocess.py"},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+								ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("100m"),
+									corev1.ResourceMemory: resource.MustParse("128Mi"),
+								},
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("500m"),
+									corev1.ResourceMemory: resource.MustParse("512Mi"),
+								},
+							},
+							Env: []corev1.EnvVar{
+								{Name: "AIBOM_JOB_NAME", Value: triggerName},
+								{Name: "AIBOM_JOB_NAMESPACE", Value: namespace},
+								{Name: "AIBOM_INPUT_DIR", Value: "/data/input"},
+								{Name: "PROMETHEUS_URL", Value: w.prometheusURL},
+								{Name: "GRAFANA_URL", Value: w.grafanaURL},
+								{Name: "GRAFANA_DATASOURCE_UID", Value: w.grafanaDatasourceUID},
+								{Name: "AIBOM_DEBUG_TELEMETRY_ALL_PODS", Value: strconv.FormatBool(w.debugTelemetryAllPods)},
+								{Name: "AIBOM_SIGNING_KEY_PATH", Value: compiledSigningMountPath + "/" + aibomdata.CompiledSigningKeyDataKey},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      "aibom-input",
+									MountPath: "/data/input",
+									ReadOnly:  true,
+								},
+								{
+									Name:      serviceCAVolumeName,
+									MountPath: serviceCAMountPath,
+									ReadOnly:  true,
+								},
+								{
+									Name:      compiledSigningVolumeName,
+									MountPath: compiledSigningMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "aibom-input",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+								},
+							},
+						},
+						{
+							Name: serviceCAVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{Name: serviceCAConfigMapName},
+									Optional:             &optional,
+								},
+							},
+						},
+						{
+							Name: compiledSigningVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: aibomdata.CompiledSigningKeySecretName,
+									Optional:   &optional,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := w.clientset.BatchV1().Jobs(namespace).Create(ctx, postprocessJob, metav1.CreateOptions{})
+	if err != nil && !errors.IsAlreadyExists(err) {
+		return "", fmt.Errorf("create postprocess job: %w", err)
+	}
+
+	log.Printf("created postprocess job %s/%s for %s", namespace, postprocessName, triggerName)
+	return postprocessName, nil
+}
+
+func (w *Watcher) createPostprocessJob(ctx context.Context, job *batchv1.Job) error {
+	// Extract data from pod logs — include sibling JobSet pods if applicable
+	pods, err := w.getInstrumentedPods(job)
+	if err != nil {
+		log.Printf("warning: could not list pods for %s/%s: %v", job.Namespace, job.Name, err)
+	}
+
+	if jobsetName := job.Labels["jobset.sigs.k8s.io/jobset-name"]; jobsetName != "" {
+		siblingPods, err := w.clientset.CoreV1().Pods(job.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("jobset.sigs.k8s.io/jobset-name=%s,%s=true", jobsetName, LabelInstrumented),
+		})
+		if err == nil {
+			seen := make(map[string]bool)
+			for _, p := range pods {
+				seen[p.Name] = true
+			}
+			for _, p := range siblingPods.Items {
+				if !seen[p.Name] {
+					pods = append(pods, p)
+				}
+			}
+		}
+	}
+
+	// Collect AIBOM annotations from the job and sibling jobs in the JobSet
+	annotations := collectAIBOMAnnotations(job.Annotations)
+	if jobsetName := job.Labels["jobset.sigs.k8s.io/jobset-name"]; jobsetName != "" && len(annotations) == 0 {
+		siblingJobs, err := w.clientset.BatchV1().Jobs(job.Namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("jobset.sigs.k8s.io/jobset-name=%s", jobsetName),
+		})
+		if err == nil {
+			for i := range siblingJobs.Items {
+				if sa := collectAIBOMAnnotations(siblingJobs.Items[i].Annotations); len(sa) > 0 {
+					annotations = sa
+					break
+				}
+			}
+		}
+	}
+
+	postprocessName, err := w.createPostprocessJobCore(ctx, job.Namespace, job.Name, pods, annotations)
+	if err != nil {
+		return err
+	}
+
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, AnnotationPostprocess, postprocessName)
+	_, err = w.clientset.BatchV1().Jobs(job.Namespace).Patch(ctx, job.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("annotate original job: %w", err)
+	}
+
+	return nil
+}
+
+// createPostprocessJobForPod is the Pod-level equivalent of createPostprocessJob, for
+// bare/ReplicaSet-owned pods (e.g. KServe predictors) that have no owning Job to trigger
+// postprocessing from. There is no JobSet-style sibling merging here since a bare pod has
+// no sibling workload to pull additional data from.
+func (w *Watcher) createPostprocessJobForPod(ctx context.Context, pod *corev1.Pod) error {
+	annotations := collectAIBOMAnnotations(pod.Annotations)
+
+	postprocessName, err := w.createPostprocessJobCore(ctx, pod.Namespace, pod.Name, []corev1.Pod{*pod}, annotations)
+	if err != nil {
+		return err
+	}
+
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, AnnotationPostprocess, postprocessName)
+	_, err = w.clientset.CoreV1().Pods(pod.Namespace).Patch(ctx, pod.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+	if err != nil {
+		return fmt.Errorf("annotate original pod: %w", err)
+	}
+
+	return nil
+}
+
+func postprocessJobName(jobName string) string {
+	return aibomdata.PostprocessJobName(jobName)
+}
+
+// collectAIBOM runs once a postprocess Job finishes — succeeded or failed (see
+// isJobFinished). The AIBOM custom resource itself is created directly by
+// postprocess.py via the Kubernetes API, so on success that create call has
+// already gone through; either way all that's left is bookkeeping: mark the
+// Job as collected and clean up the Job/ConfigMap so a same-named rerun of
+// the original workload doesn't collide with leftovers. On failure this also
+// discards the failed Job's pod logs (#112).
+func (w *Watcher) collectAIBOM(ctx context.Context, job *batchv1.Job) {
+	originalJobName := job.Labels[LabelPostprocessFor]
+	if originalJobName == "" {
+		return
+	}
+
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":"%s"}}}`, AnnotationAIBOMCollected, time.Now().UTC().Format(time.RFC3339))
+	if _, err := w.clientset.BatchV1().Jobs(job.Namespace).Patch(ctx, job.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		log.Printf("warning: could not annotate postprocess job %s/%s as collected: %v", job.Namespace, job.Name, err)
+	}
+
+	if w.debugKeepPostprocessJobs {
+		log.Printf("debug-keep-postprocess-jobs set: leaving postprocess job %s/%s and its data configmap in place", job.Namespace, job.Name)
+		return
+	}
+
+	background := metav1.DeletePropagationBackground
+	if err := w.clientset.BatchV1().Jobs(job.Namespace).Delete(ctx, job.Name, metav1.DeleteOptions{PropagationPolicy: &background}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete postprocess job %s/%s: %v", job.Namespace, job.Name, err)
+	}
+	configMapName := job.Name + configMapSuffix
+	if err := w.clientset.CoreV1().ConfigMaps(job.Namespace).Delete(ctx, configMapName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete postprocess data configmap %s/%s: %v", job.Namespace, configMapName, err)
+	}
+
+	w.deleteWorkloadIdentity(ctx, job.Namespace, originalJobName)
+}
+
+// deleteWorkloadIdentity removes the per-job ServiceAccount, Role,
+// RoleBinding, and token Secret the webhook provisioned at admission time
+// for originalJobName (see internal/webhook/identity.go's
+// ensureWorkloadIdentity), so a same-named rerun of the workload
+// re-provisions fresh ones instead of reusing a stale token, and so these
+// don't otherwise accumulate forever. Deleting the ServiceAccount also
+// immediately invalidates any token minted for it, independent of the
+// token's own expiration.
+func (w *Watcher) deleteWorkloadIdentity(ctx context.Context, namespace, triggerName string) {
+	name := aibomdata.WorkloadIdentityName(triggerName)
+
+	if err := w.clientset.CoreV1().ServiceAccounts(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete workload identity serviceaccount %s/%s: %v", namespace, name, err)
+	}
+	if err := w.clientset.RbacV1().Roles(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete workload identity role %s/%s: %v", namespace, name, err)
+	}
+	if err := w.clientset.RbacV1().RoleBindings(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete workload identity rolebinding %s/%s: %v", namespace, name, err)
+	}
+	if err := w.clientset.CoreV1().Secrets(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		log.Printf("warning: could not delete workload identity token secret %s/%s: %v", namespace, name, err)
+	}
+}

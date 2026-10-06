@@ -1,0 +1,1136 @@
+package webhook
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+func newTestMutator() *Mutator {
+	return NewMutator("pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime", true, "")
+}
+
+func newTestMutatorNoDataset() *Mutator {
+	return NewMutator("pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime", false, "")
+}
+
+func podWithOwner(kind string) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: kind, Name: "test-job"},
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "train", Image: "pytorch:latest"},
+			},
+		},
+	}
+}
+
+func podWithGPU() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gpu-pod",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "train",
+					Image: "pytorch:latest",
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
+							"nvidia.com/gpu": resource.MustParse("1"),
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func podWithExistingPythonPath() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "Job", Name: "test-job"},
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name:  "train",
+					Image: "pytorch:latest",
+					Env: []corev1.EnvVar{
+						{Name: "PYTHONPATH", Value: "/usr/local/lib/python3.10"},
+						{Name: "OTHER_VAR", Value: "keep"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func podAlreadyInstrumented() *corev1.Pod {
+	pod := podWithOwner("Job")
+	pod.Labels = map[string]string{"aibom.io/instrumented": "true"}
+	return pod
+}
+
+func podNoMatch() *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "web-pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{
+				{Kind: "Deployment", Name: "web-app"},
+			},
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{Name: "web", Image: "nginx:latest"},
+			},
+		},
+	}
+}
+
+// --- shouldMutate tests ---
+
+func TestShouldMutate_JobOwner(t *testing.T) {
+	m := newTestMutator()
+	if !m.shouldMutate(podWithOwner("Job"), "") {
+		t.Error("expected pod with Job owner to match")
+	}
+}
+
+func TestShouldMutate_JobSetOwner(t *testing.T) {
+	m := newTestMutator()
+	if !m.shouldMutate(podWithOwner("JobSet"), "") {
+		t.Error("expected pod with JobSet owner to match")
+	}
+}
+
+func TestShouldMutate_PyTorchJobOwner(t *testing.T) {
+	m := newTestMutator()
+	if !m.shouldMutate(podWithOwner("PyTorchJob"), "") {
+		t.Error("expected pod with PyTorchJob owner to match")
+	}
+}
+
+func TestShouldMutate_RayJobOwner(t *testing.T) {
+	m := newTestMutator()
+	if !m.shouldMutate(podWithOwner("RayJob"), "") {
+		t.Error("expected pod with RayJob owner to match")
+	}
+}
+
+func TestShouldMutate_GPURequest(t *testing.T) {
+	m := newTestMutator()
+	if !m.shouldMutate(podWithGPU(), "") {
+		t.Error("expected pod with GPU request to match")
+	}
+}
+
+func TestMutate_KServePredictor_AddsInferenceServiceNameEnv(t *testing.T) {
+	m := newTestMutator()
+	pod := podWithGPU()
+	pod.Labels = map[string]string{"serving.kserve.io/inferenceservice": "granite-model"}
+
+	patches, err := m.Mutate(pod, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path != "/spec/initContainers" {
+			continue
+		}
+		c := p.Value.([]corev1.Container)[0]
+		for _, env := range c.Env {
+			if env.Name == "INFERENCESERVICE_NAME" {
+				if env.ValueFrom == nil || env.ValueFrom.FieldRef == nil {
+					t.Fatalf("INFERENCESERVICE_NAME should be a downward API field ref, got %+v", env)
+				}
+				want := "metadata.labels['serving.kserve.io/inferenceservice']"
+				if env.ValueFrom.FieldRef.FieldPath != want {
+					t.Errorf("field path = %q, want %q", env.ValueFrom.FieldRef.FieldPath, want)
+				}
+				return
+			}
+		}
+		t.Fatal("expected INFERENCESERVICE_NAME env var on a KServe predictor pod")
+	}
+	t.Fatal("init container patch not found")
+}
+
+func TestMutate_NonKServePod_NoInferenceServiceNameEnv(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithGPU(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path != "/spec/initContainers" {
+			continue
+		}
+		c := p.Value.([]corev1.Container)[0]
+		for _, env := range c.Env {
+			if env.Name == "INFERENCESERVICE_NAME" {
+				t.Error("INFERENCESERVICE_NAME should not be set for a pod without the KServe predictor label — a downward API field ref to a missing label fails pod admission")
+			}
+		}
+		return
+	}
+	t.Fatal("init container patch not found")
+}
+
+func TestShouldMutate_IgnoresWorkloadSuppliedInstrumentedLabel(t *testing.T) {
+	// A workload's own manifest can set aibom.io/instrumented: "true" before
+	// the webhook ever runs -- reinvocationPolicy is Never, so there's no
+	// legitimate way this label is already "true" on a fresh CREATE. If
+	// shouldMutate trusted it, a workload could dodge instrumentation
+	// entirely just by pre-setting the label. It must still match here,
+	// same as any other Job-owned pod.
+	m := newTestMutator()
+	if !m.shouldMutate(podAlreadyInstrumented(), "") {
+		t.Error("expected a workload-supplied aibom.io/instrumented label to be ignored, not honored")
+	}
+}
+
+func TestMutate_IgnoresWorkloadSuppliedInstrumentedLabel(t *testing.T) {
+	// Same scenario at the Mutate level, not just the shouldMutate gate:
+	// confirm the pod actually gets the real injection (discovery init
+	// container) rather than being waved through as "already done".
+	m := newTestMutator()
+	patches, err := m.Mutate(podAlreadyInstrumented(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	foundInitContainer := false
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers" {
+			foundInitContainer = true
+		}
+	}
+	if !foundInitContainer {
+		t.Error("expected a workload-supplied aibom.io/instrumented label not to suppress real injection")
+	}
+}
+
+func TestMutate_StripsSpoofedInstrumentedLabelOnNonQualifyingPod(t *testing.T) {
+	// A workload that doesn't qualify for instrumentation (no matching
+	// owner, no GPU request) could still pre-set aibom.io/instrumented and
+	// aibom.io/instrumented-by to falsely masquerade as already collected
+	// to the watcher, which selects pods by aibom.io/instrumented=true.
+	m := newTestMutator()
+	pod := podNoMatch()
+	pod.Labels = map[string]string{"aibom.io/instrumented": "true"}
+	pod.Annotations = map[string]string{"aibom.io/instrumented-by": "webhook"}
+
+	patches, err := m.Mutate(pod, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantRemoveLabel := false
+	wantRemoveAnnotation := false
+	for _, p := range patches {
+		if p.Op != "remove" {
+			t.Errorf("expected only remove patches for a non-qualifying pod, got op %q on %q", p.Op, p.Path)
+			continue
+		}
+		switch p.Path {
+		case "/metadata/labels/aibom.io~1instrumented":
+			wantRemoveLabel = true
+		case "/metadata/annotations/aibom.io~1instrumented-by":
+			wantRemoveAnnotation = true
+		}
+	}
+	if !wantRemoveLabel {
+		t.Error("expected a remove patch for the spoofed aibom.io/instrumented label")
+	}
+	if !wantRemoveAnnotation {
+		t.Error("expected a remove patch for the spoofed aibom.io/instrumented-by annotation")
+	}
+}
+
+func TestMutate_NonQualifyingPodWithNoClaims_NoPatches(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podNoMatch(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(patches) != 0 {
+		t.Errorf("expected no patches for a non-qualifying pod with no spoofed claims, got %+v", patches)
+	}
+}
+
+func TestShouldMutate_NoMatch(t *testing.T) {
+	m := newTestMutator()
+	if m.shouldMutate(podNoMatch(), "") {
+		t.Error("expected Deployment-owned pod without GPU to be skipped")
+	}
+}
+
+func TestShouldMutate_PostprocessPod(t *testing.T) {
+	m := newTestMutator()
+	pod := podWithOwner("Job")
+	pod.Labels = map[string]string{"aibom.io/postprocess-for": "train-job"}
+	if m.shouldMutate(pod, "") {
+		t.Error("expected a postprocess Job's own pod to be skipped despite its Job owner")
+	}
+}
+
+func TestShouldMutate_PostprocessLabelWithoutJobOwner_NotHonored(t *testing.T) {
+	// A raw Pod (no Job owner at all) carrying aibom.io/postprocess-for
+	// can't be a real postprocess pod -- the watcher only ever creates
+	// these via a plain batch/v1 Job. Use a GPU pod (no owner reference at
+	// all) so it would otherwise qualify for instrumentation on its own
+	// merits: if the label were honored without a Job-owner check, this
+	// pod would be wrongly skipped instead of instrumented.
+	m := newTestMutator()
+	pod := podWithGPU()
+	pod.Labels = map[string]string{"aibom.io/postprocess-for": "train-job"}
+	if !m.shouldMutate(pod, "") {
+		t.Error("expected aibom.io/postprocess-for on a non-Job-owned pod to be ignored, not honored")
+	}
+}
+
+const testJobControllerIdentity = "system:serviceaccount:kube-system:job-controller"
+
+func newTestMutatorWithJobControllerCheck() *Mutator {
+	m := newTestMutator()
+	m.TrustedJobControllerIdentity = testJobControllerIdentity
+	return m
+}
+
+func TestShouldMutate_PostprocessPod_RealJobControllerIdentity_StillSkipped(t *testing.T) {
+	// A real postprocess pod is created by the actual Job controller, so
+	// its admission request's userInfo is the Job controller's own
+	// identity. With the extra check configured, this must still match.
+	m := newTestMutatorWithJobControllerCheck()
+	pod := podWithOwner("Job")
+	pod.Labels = map[string]string{"aibom.io/postprocess-for": "train-job"}
+	if m.shouldMutate(pod, testJobControllerIdentity) {
+		t.Error("expected a real postprocess pod (created by the Job controller) to still be skipped")
+	}
+}
+
+func TestShouldMutate_PostprocessPod_FabricatedOwnerReference_NowCaught(t *testing.T) {
+	// A raw Pod with a hand-crafted Job ownerReference, submitted directly
+	// by some other identity (not the real Job controller) -- this is the
+	// residual gap #51 documented as unclosed. With
+	// TrustedJobControllerIdentity configured, it's closed: the
+	// fabricated ownerReference alone isn't enough once the requester's
+	// real identity is checked too.
+	m := newTestMutatorWithJobControllerCheck()
+	pod := podWithOwner("Job") // has a Job-kind ownerReference, but...
+	pod.Labels = map[string]string{"aibom.io/postprocess-for": "train-job"}
+	if !m.shouldMutate(pod, "system:serviceaccount:default:some-user-sa") {
+		t.Error("expected a fabricated Job ownerReference from a non-Job-controller requester to be caught, not honored")
+	}
+}
+
+func TestShouldMutate_PostprocessPod_CheckDisabledByDefault(t *testing.T) {
+	// Without TrustedJobControllerIdentity configured (the default), the
+	// weaker ownerReference-only check still applies regardless of who
+	// the requester actually was -- unchanged from #51's original
+	// behavior, preserved here as a regression guard.
+	m := newTestMutator() // TrustedJobControllerIdentity unset
+	pod := podWithOwner("Job")
+	pod.Labels = map[string]string{"aibom.io/postprocess-for": "train-job"}
+	if m.shouldMutate(pod, "system:serviceaccount:default:some-user-sa") {
+		t.Error("expected the ownerReference-only check to still apply when TrustedJobControllerIdentity is unset")
+	}
+}
+
+// --- Discovery init container tests ---
+
+func TestMutate_DiscoveryScriptCommand(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers" {
+			containers := p.Value.([]corev1.Container)
+			c := containers[0]
+			if c.Command[0] != "/bin/bash" {
+				t.Errorf("expected /bin/bash command, got %q", c.Command[0])
+			}
+			if c.Args[0] != "python3 /scripts/generate_snapshot.py" {
+				t.Errorf("expected python3 script command, got %q", c.Args[0])
+			}
+			return
+		}
+	}
+	t.Error("init container patch not found")
+}
+
+func TestMutate_InjectsInitContainer(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers" {
+			containers, ok := p.Value.([]corev1.Container)
+			if !ok {
+				t.Fatal("initContainers patch value is not []Container")
+			}
+			if containers[0].Name != "aibom-discovery" {
+				t.Errorf("expected init container name 'aibom-discovery', got %q", containers[0].Name)
+			}
+			if len(containers[0].Env) != 6 {
+				t.Errorf("expected 6 env vars, got %d", len(containers[0].Env))
+			}
+			if len(containers[0].VolumeMounts) != 4 {
+				t.Errorf("expected 4 volume mounts (aibom-data + aibom-scripts + aibom-token + aibom-discovery-signing-key), got %d", len(containers[0].VolumeMounts))
+			}
+			return
+		}
+	}
+	t.Error("initContainers patch not found")
+}
+
+// TestMutate_DiscoverySigningKeyMountedOnlyInInitContainer guards the whole
+// point of #30: the workload's own application container must never have
+// access to the key used to sign discovery data, or it could produce a
+// validly-signed forgery of its own hardware claims.
+func TestMutate_DiscoverySigningKeyMountedOnlyInInitContainer(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	foundInInit := false
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers" {
+			containers, ok := p.Value.([]corev1.Container)
+			if !ok {
+				t.Fatal("initContainers patch value is not []Container")
+			}
+			for _, mount := range containers[0].VolumeMounts {
+				if mount.Name == "aibom-discovery-signing-key" {
+					foundInInit = true
+				}
+			}
+		}
+	}
+	if !foundInInit {
+		t.Fatal("expected aibom-discovery-signing-key mount on the discovery init container")
+	}
+
+	appMounts := collectContainerVolumeMountPatches(patches, 0)
+	for _, mount := range appMounts {
+		if mount.Name == "aibom-discovery-signing-key" {
+			t.Fatal("aibom-discovery-signing-key must never be mounted into an application container")
+		}
+	}
+}
+
+func TestMutate_JobOwnedPod_HasStaticDataConfigMapEnv(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path != "/spec/initContainers" {
+			continue
+		}
+		c := p.Value.([]corev1.Container)[0]
+		for _, env := range c.Env {
+			if env.Name == "AIBOM_DATA_CONFIGMAP" {
+				want := "test-job-aibom-postprocess-data"
+				if env.Value != want {
+					t.Errorf("AIBOM_DATA_CONFIGMAP = %q, want %q", env.Value, want)
+				}
+				return
+			}
+		}
+		t.Fatal("expected AIBOM_DATA_CONFIGMAP for a Job-owned pod — its trigger name comes from ownerReferences, known at admission time")
+	}
+	t.Fatal("init container patch not found")
+}
+
+// TestMutate_BarePod_OmitsDataConfigMapEnv guards against the real failure
+// mode this exists to avoid: a bare/ReplicaSet-owned pod's own name isn't
+// assigned yet when the webhook runs (the API server hasn't resolved
+// generateName to a real name at admission time), so baking in
+// aibomdata.ConfigMapName(triggerName(pod)) here would silently produce a
+// malformed "-aibom-postprocess-data" value (empty trigger prefix) — see
+// dataConfigMapEnvVar's doc comment.
+func TestMutate_BarePod_OmitsDataConfigMapEnv(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithGPU(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path != "/spec/initContainers" {
+			continue
+		}
+		c := p.Value.([]corev1.Container)[0]
+		for _, env := range c.Env {
+			if env.Name == "AIBOM_DATA_CONFIGMAP" {
+				t.Errorf("expected no AIBOM_DATA_CONFIGMAP for a bare pod (got %q) — its own name isn't known at admission time", env.Value)
+			}
+		}
+		return
+	}
+	t.Fatal("init container patch not found")
+}
+
+func TestMutate_ExistingInitContainers(t *testing.T) {
+	m := newTestMutator()
+	pod := podWithOwner("Job")
+	pod.Spec.InitContainers = []corev1.Container{
+		{Name: "existing-init", Image: "busybox"},
+	}
+
+	patches, err := m.Mutate(pod, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers/-" {
+			return // correct: appending
+		}
+		if p.Path == "/spec/initContainers" {
+			t.Error("should append with /- when initContainers already exist, not replace")
+		}
+	}
+	t.Error("expected append patch at /spec/initContainers/-")
+}
+
+// --- Volume tests ---
+
+func TestMutate_InjectsAIBOMDataVolume(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/volumes" {
+			volumes, ok := p.Value.([]corev1.Volume)
+			if !ok {
+				t.Fatal("volumes patch value is not []Volume")
+			}
+			if volumes[0].Name != "aibom-data" {
+				t.Errorf("expected first volume 'aibom-data', got %q", volumes[0].Name)
+			}
+			if volumes[0].EmptyDir == nil {
+				t.Error("expected emptyDir volume source")
+			}
+			return
+		}
+	}
+	t.Error("volumes patch not found")
+}
+
+func TestMutate_InjectsScriptsVolume(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/volumes/-" {
+			vol, ok := p.Value.(corev1.Volume)
+			if !ok {
+				continue
+			}
+			if vol.Name == "aibom-scripts" {
+				if vol.ConfigMap == nil {
+					t.Error("expected ConfigMap volume source")
+				} else if vol.ConfigMap.Name != "aibom-scripts" {
+					t.Errorf("expected ConfigMap name 'aibom-scripts', got %q", vol.ConfigMap.Name)
+				}
+				return
+			}
+		}
+	}
+	t.Error("aibom-scripts volume patch not found")
+}
+
+// --- Label / annotation tests ---
+
+func TestMutate_AddsLabel(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/metadata/labels" {
+			labels, ok := p.Value.(map[string]string)
+			if !ok {
+				t.Fatal("labels patch value is not map[string]string")
+			}
+			if labels["aibom.io/instrumented"] != "true" {
+				t.Error("expected aibom.io/instrumented label")
+			}
+			return
+		}
+	}
+	t.Error("expected labels patch")
+}
+
+func TestMutate_ExistingLabels(t *testing.T) {
+	m := newTestMutator()
+	pod := podWithOwner("Job")
+	pod.Labels = map[string]string{"app": "training"}
+
+	patches, err := m.Mutate(pod, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/metadata/labels/aibom.io~1instrumented" {
+			if p.Value != "true" {
+				t.Errorf("expected label value 'true', got %v", p.Value)
+			}
+			return
+		}
+	}
+	t.Error("expected escaped label path patch when labels already exist")
+}
+
+func TestMutate_NoMutationNeeded(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podNoMatch(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patches != nil {
+		t.Errorf("expected nil patches for non-matching pod, got %d", len(patches))
+	}
+}
+
+// --- Dataset detector tests ---
+
+func TestMutate_InjectsDatasetDetectorEnvVars(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	envVarNames := map[string]bool{}
+	for _, p := range patches {
+		if p.Path == "/spec/containers/0/env" {
+			envs, ok := p.Value.([]corev1.EnvVar)
+			if !ok {
+				t.Fatal("env patch value is not []EnvVar")
+			}
+			for _, e := range envs {
+				envVarNames[e.Name] = true
+			}
+		}
+	}
+
+	for _, expected := range []string{"AIBOM_DATASET_DETECT", "AIBOM_DEBUG", "AIBOM_DATASET_OUTPUT", "PYTHONPATH"} {
+		if !envVarNames[expected] {
+			t.Errorf("expected env var %q in dataset detector patches", expected)
+		}
+	}
+	// Since #47, the app container never talks to the Kubernetes API, so it
+	// has no use for the ConfigMap name -- unlike the discovery init
+	// container and the dataset sidecar, both of which still get it.
+	if envVarNames["AIBOM_DATA_CONFIGMAP"] {
+		t.Error("app container should not get AIBOM_DATA_CONFIGMAP anymore (see #47)")
+	}
+}
+
+// collectContainerVolumeMountPatches gathers every VolumeMount added to a
+// container's volumeMounts, regardless of whether the patch replaced the
+// whole array ([]VolumeMount, when the container started with none) or
+// appended individual entries (VolumeMount, one patch per entry, when it
+// already had some) — see buildDatasetDetectorPatches.
+func collectContainerVolumeMountPatches(patches []PatchOperation, containerIdx int) []corev1.VolumeMount {
+	prefix := fmt.Sprintf("/spec/containers/%d/volumeMounts", containerIdx)
+	var mounts []corev1.VolumeMount
+	for _, p := range patches {
+		if p.Path == prefix {
+			mounts = append(mounts, p.Value.([]corev1.VolumeMount)...)
+		} else if p.Path == prefix+"/-" {
+			mounts = append(mounts, p.Value.(corev1.VolumeMount))
+		}
+	}
+	return mounts
+}
+
+// TestMutate_AppContainerNeverGetsTokenMountOrK8sAPIScript is the core
+// regression test for #47: the app container must never receive a
+// Kubernetes API token or the k8s_api.py script it would need to use one,
+// since runtime_detector.py no longer talks to the Kubernetes API at all
+// -- the aibom-dataset-sidecar container performs the (signed) ConfigMap
+// write instead. This holds regardless of whether the container already
+// had its own default-SA token mounted (automount enabled) or not.
+func TestMutate_AppContainerNeverGetsTokenMountOrK8sAPIScript(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mounts := collectContainerVolumeMountPatches(patches, 0)
+	if len(mounts) == 0 {
+		t.Fatal("container volumeMounts patch not found")
+	}
+	for _, mount := range mounts {
+		if mount.Name == "aibom-token" {
+			t.Error("app container should never get an aibom-token mount")
+		}
+		if mount.SubPath == "k8s_api.py" {
+			t.Error("app container should never get a k8s_api.py mount")
+		}
+	}
+}
+
+// TestMutate_StripsExistingDefaultTokenMountFromAppContainer covers the
+// gap flagged in review on #50: if automountServiceAccountToken wasn't
+// disabled, the built-in ServiceAccount admission controller already
+// mounted the pod's own (namespace-wide, via aibom-workload-data) default
+// token into this container before our webhook ran. Since #47, the app
+// container has no remaining use for any Kubernetes API token at all, so
+// leaving that mount in place would give it broader ConfigMap access than
+// it had before #47 (when it was retargeted to a narrower per-job token
+// instead of just being left alone). The webhook must now remove it
+// outright rather than leaving it untouched.
+func TestMutate_StripsExistingDefaultTokenMountFromAppContainer(t *testing.T) {
+	m := newTestMutator()
+	pod := podWithOwner("Job")
+	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{
+		{Name: "kube-api-access-abcde", MountPath: "/var/run/secrets/kubernetes.io/serviceaccount", ReadOnly: true},
+	}
+
+	patches, err := m.Mutate(pod, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mounts := collectContainerVolumeMountPatches(patches, 0)
+	for _, mount := range mounts {
+		if mount.Name == "aibom-token" {
+			t.Fatal("should not add a second volumeMount at a path the container already mounts")
+		}
+	}
+
+	wantRemovePath := "/spec/containers/0/volumeMounts/0"
+	found := false
+	for _, p := range patches {
+		if p.Op == "remove" && p.Path == wantRemovePath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a remove patch at %q stripping the app container's pre-existing default token mount", wantRemovePath)
+	}
+}
+
+func TestMutate_DatasetDetectorVolumeMount(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/containers/0/volumeMounts" {
+			mounts, ok := p.Value.([]corev1.VolumeMount)
+			if !ok {
+				t.Fatal("volumeMounts patch value is not []VolumeMount")
+			}
+			foundDetector := false
+			for _, mount := range mounts {
+				if mount.MountPath == "/aibom-hooks/usercustomize.py" && mount.SubPath == "runtime_detector.py" {
+					foundDetector = true
+				}
+			}
+			if !foundDetector {
+				t.Error("expected usercustomize.py mount with subPath runtime_detector.py")
+			}
+			return
+		}
+	}
+	t.Error("container volumeMounts patch not found")
+}
+
+func TestMutate_PythonPathAppend(t *testing.T) {
+	m := newTestMutator()
+	patches, err := m.Mutate(podWithExistingPythonPath(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/containers/0/env/0/value" {
+			val, ok := p.Value.(string)
+			if !ok {
+				t.Fatal("PYTHONPATH replace value is not string")
+			}
+			if val != "/aibom-hooks:/usr/local/lib/python3.10" {
+				t.Errorf("expected prepended PYTHONPATH, got %q", val)
+			}
+			return
+		}
+	}
+	t.Error("expected PYTHONPATH replace patch")
+}
+
+func TestMutate_DatasetDetectionDisabled(t *testing.T) {
+	m := newTestMutatorNoDataset()
+	patches, err := m.Mutate(podWithOwner("Job"), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, p := range patches {
+		if p.Path == "/spec/containers/0/env" || p.Path == "/spec/containers/0/env/-" {
+			t.Error("dataset detector env vars should not be injected when disabled")
+		}
+		if p.Path == "/spec/containers/0/volumeMounts" || p.Path == "/spec/containers/0/volumeMounts/-" {
+			t.Error("dataset detector volume mounts should not be injected when disabled")
+		}
+	}
+}
+
+// --- Handler round-trip tests ---
+
+func buildAdmissionReview(pod *corev1.Pod) admissionv1.AdmissionReview {
+	podBytes, _ := json.Marshal(pod)
+	return admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "admission.k8s.io/v1",
+			Kind:       "AdmissionReview",
+		},
+		Request: &admissionv1.AdmissionRequest{
+			UID: "test-uid",
+			Resource: metav1.GroupVersionResource{
+				Group: "", Version: "v1", Resource: "pods",
+			},
+			Object: runtime.RawExtension{Raw: podBytes},
+		},
+	}
+}
+
+func buildJobAdmissionReview(job *batchv1.Job, username string) admissionv1.AdmissionReview {
+	jobBytes, _ := json.Marshal(job)
+	return admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "admission.k8s.io/v1",
+			Kind:       "AdmissionReview",
+		},
+		Request: &admissionv1.AdmissionRequest{
+			UID:      "test-uid",
+			Resource: jobGVR,
+			UserInfo: authenticationv1.UserInfo{Username: username},
+			Object:   runtime.RawExtension{Raw: jobBytes},
+		},
+	}
+}
+
+func buildJobUpdateAdmissionReview(job, oldJob *batchv1.Job, username string) admissionv1.AdmissionReview {
+	jobBytes, _ := json.Marshal(job)
+	oldJobBytes, _ := json.Marshal(oldJob)
+	return admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "admission.k8s.io/v1",
+			Kind:       "AdmissionReview",
+		},
+		Request: &admissionv1.AdmissionRequest{
+			UID:       "test-uid",
+			Resource:  jobGVR,
+			Operation: admissionv1.Update,
+			UserInfo:  authenticationv1.UserInfo{Username: username},
+			Object:    runtime.RawExtension{Raw: jobBytes},
+			OldObject: runtime.RawExtension{Raw: oldJobBytes},
+		},
+	}
+}
+
+func TestHandleAdmission_StripsSpoofedPostprocessLabelFromUntrustedJob(t *testing.T) {
+	h := NewHandler(newTestMutator(), testTrustedIdentity)
+	review := buildJobAdmissionReview(jobWithPostprocessLabel(), "system:serviceaccount:default:some-user-sa")
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Response.Allowed {
+		t.Error("expected Allowed=true -- this webhook neutralizes the spoofed label, it doesn't reject the Job")
+	}
+	if resp.Response.Patch == nil {
+		t.Fatal("expected a patch removing the spoofed aibom.io/postprocess-for label")
+	}
+	var patches []PatchOperation
+	if err := json.Unmarshal(resp.Response.Patch, &patches); err != nil {
+		t.Fatalf("failed to unmarshal patch: %v", err)
+	}
+	if len(patches) != 2 {
+		t.Errorf("expected 2 remove patches (job + template label), got %d: %+v", len(patches), patches)
+	}
+}
+
+func TestHandleAdmission_TrustedWatcherJobUntouched(t *testing.T) {
+	h := NewHandler(newTestMutator(), testTrustedIdentity)
+	review := buildJobAdmissionReview(jobWithPostprocessLabel(), testTrustedIdentity)
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Response.Allowed {
+		t.Error("expected Allowed=true")
+	}
+	if resp.Response.Patch != nil {
+		t.Errorf("expected no patch for a Job created by the trusted watcher identity, got %s", resp.Response.Patch)
+	}
+}
+
+// TestHandleAdmission_StripsPostprocessLabelAddedOnUpdate covers the bypass
+// the reviewer flagged on PR #53: creating a Job without the label (passing
+// a CREATE-only check trivially), then adding it via a later UPDATE. The
+// Job webhook rule now covers UPDATE too (see webhook-configuration.yaml),
+// and this exercises that path end to end through ServeHTTP.
+func TestHandleAdmission_StripsPostprocessLabelAddedOnUpdate(t *testing.T) {
+	h := NewHandler(newTestMutator(), testTrustedIdentity)
+	oldJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "sneaky-job", Namespace: "default"},
+	}
+	review := buildJobUpdateAdmissionReview(jobWithPostprocessLabel(), oldJob, "system:serviceaccount:default:some-user-sa")
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Response.Allowed {
+		t.Error("expected Allowed=true -- this webhook neutralizes the spoofed label, it doesn't reject the Job")
+	}
+	if resp.Response.Patch == nil {
+		t.Fatal("expected a patch removing the label added on UPDATE")
+	}
+	var patches []PatchOperation
+	if err := json.Unmarshal(resp.Response.Patch, &patches); err != nil {
+		t.Fatalf("failed to unmarshal patch: %v", err)
+	}
+	if len(patches) != 2 {
+		t.Errorf("expected 2 remove patches (job + template label), got %d: %+v", len(patches), patches)
+	}
+}
+
+func TestHandleAdmission_MutatesPod(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	review := buildAdmissionReview(podWithOwner("Job"))
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Response.Allowed {
+		t.Error("expected Allowed=true")
+	}
+	if resp.Response.Patch == nil {
+		t.Error("expected non-nil patch for matching pod")
+	}
+	if resp.Response.PatchType == nil || *resp.Response.PatchType != admissionv1.PatchTypeJSONPatch {
+		t.Error("expected JSONPatch patch type")
+	}
+}
+
+func TestHandleAdmission_NoMutationForDeployment(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	review := buildAdmissionReview(podNoMatch())
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if !resp.Response.Allowed {
+		t.Error("expected Allowed=true")
+	}
+	if resp.Response.Patch != nil {
+		t.Error("expected nil patch for non-matching pod")
+	}
+}
+
+func TestHandleAdmission_WrongMethod(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	req := httptest.NewRequest(http.MethodGet, "/mutate", nil)
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+func TestHandleAdmission_WrongContentType(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader([]byte("{}")))
+	req.Header.Set("Content-Type", "text/plain")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnsupportedMediaType {
+		t.Errorf("expected 415, got %d", rr.Code)
+	}
+}
+
+func buildConfigMapAdmissionReview(cm *corev1.ConfigMap, username string) admissionv1.AdmissionReview {
+	cmBytes, _ := json.Marshal(cm)
+	return admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "admission.k8s.io/v1",
+			Kind:       "AdmissionReview",
+		},
+		Request: &admissionv1.AdmissionRequest{
+			UID:      "test-uid",
+			Resource: configMapGVR,
+			UserInfo: authenticationv1.UserInfo{Username: username},
+			Object:   runtime.RawExtension{Raw: cmBytes},
+		},
+	}
+}
+
+func TestHandleAdmission_DeniesForgedSigningPublicKeyConfigMap(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	review := buildConfigMapAdmissionReview(signingPublicKeyConfigMap("ml-team"), "system:serviceaccount:ml-team:some-training-pod-sa")
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Response.Allowed {
+		t.Error("expected Allowed=false -- an untrusted identity must not be able to write the signing-public-key anchor")
+	}
+}
+
+func TestHandleAdmission_AllowsTrustedPostprocessSigningPublicKeyWrite(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	review := buildConfigMapAdmissionReview(signingPublicKeyConfigMap("ml-team"), "system:serviceaccount:ml-team:aibom-postprocess")
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.Response.Allowed {
+		t.Errorf("expected Allowed=true for the trusted aibom-postprocess identity, got denied: %v", resp.Response.Result)
+	}
+}
+
+func TestHandleAdmission_AllowsUnrelatedConfigMapFromAnyIdentity(t *testing.T) {
+	h := NewHandler(newTestMutator(), "")
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "train-job-aibom-postprocess-data", Namespace: "ml-team"},
+	}
+	review := buildConfigMapAdmissionReview(cm, "system:serviceaccount:ml-team:some-training-pod-sa")
+
+	body, _ := json.Marshal(review)
+	req := httptest.NewRequest(http.MethodPost, "/mutate", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.ServeHTTP(rr, req)
+
+	var resp admissionv1.AdmissionReview
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if !resp.Response.Allowed {
+		t.Errorf("expected Allowed=true for an unrelated ConfigMap, got denied: %v", resp.Response.Result)
+	}
+}

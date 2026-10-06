@@ -1,0 +1,170 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aibom-postprocess
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["aibom.io"]
+    resources: ["aiboms"]
+    verbs: ["create", "get"]
+  # The persisted telemetry time series (postprocess.py's
+  # publish_series_object): an AIBOMTelemetry created before the AIBOM (its
+  # sha256 is part of the signed spec), given an ownerReference to the AIBOM
+  # afterwards (patch). Names are random per run, so this can't be narrowed
+  # with resourceNames -- which is exactly why `delete` is withheld: with it,
+  # a compromised postprocess could erase any other run's series in this
+  # namespace, and unlike aiboms (create/get only) that would widen what this
+  # identity can destroy. The cost is that an object created just before a
+  # failed AIBOM create is orphaned rather than cleaned up (see CLAUDE.md's
+  # Telemetry Time Series). Deliberately a custom kind, not a ConfigMap: no
+  # other ServiceAccount in the namespace is granted it (unlike
+  # aibom-workload-data below), so a workload pod can't forge or overwrite a
+  # run's series.
+  - apiGroups: ["aibom.io"]
+    resources: ["aibomtelemetries"]
+    verbs: ["create", "patch"]
+  # The ownerReference is set with blockOwnerDeletion: true, which OpenShift's
+  # OwnerReferencesPermissionEnforcement admission plugin only allows for a
+  # requester that can update the owner's finalizers subresource.
+  - apiGroups: ["aibom.io"]
+    resources: ["aiboms/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aibom-postprocess
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aibom-postprocess
+subjects:
+  - kind: ServiceAccount
+    name: aibom-postprocess
+    namespace: {{ .Release.Namespace }}
+---
+#
+# aibom-workload-data grants every ServiceAccount in the namespace broad
+# create/get/patch access to all ConfigMaps -- historically the only way a
+# pod's discovery init container or app container could write into its
+# data ConfigMap, but also letting any pod tamper with any other job's
+# ConfigMap in this namespace (#43).
+#
+# For a Job-owned pod (Job/JobSet/PyTorchJob/RayJob -- see mutator.go's
+# matchedOwnerKinds), this Role is no longer what's actually used: the
+# webhook now provisions a per-job ServiceAccount/Role/RoleBinding at
+# admission time, scoped via resourceNames to exactly that job's own data
+# ConfigMap (see internal/webhook/identity.go's ensureWorkloadIdentity),
+# and mounts a token for it in place of the pod's own ServiceAccount
+# wherever this webhook controls the mount. This broad Role remains only
+# as the fallback for bare GPU pods with no matching owner (e.g. a KServe
+# predictor pod owned by a ReplicaSet) -- their final pod name, and so the
+# ConfigMap name a per-pod Role would need to be scoped to, doesn't exist
+# yet at admission time (pods created via generateName), so no
+# equivalently-scoped alternative is possible there. That residual gap is
+# accepted, not solved, by this Role's continued existence.
+#
+# Also, less obviously, this is what lets aibom-postprocess publish the
+# aibom-compiled-signing-public-key ConfigMap (see signing.yaml's NOTE) --
+# not something this Role was written for, just a side effect of granting
+# every SA in the namespace ConfigMap access. That side effect used to also
+# mean any workload pod could overwrite that ConfigMap with a forged key;
+# it's now denied at admission time regardless of this Role's breadth (see
+# internal/webhook/configmapguard.go's ValidateSigningPublicKeyConfigMap).
+# Narrowing this Role still needs an explicit create/patch grant added in
+# signing.yaml first, or aibom-postprocess itself loses the ability to
+# publish -- the admission guard only vets *who* is writing, not whether
+# they're allowed to at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aibom-workload-data
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aibom-workload-data
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aibom-workload-data
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:{{ .Release.Namespace }}
+---
+# Lets the aibom-discovery init container (running as the workload's own
+# ServiceAccount) read the InferenceService that owns it, to resolve model
+# identity for KServe predictors backed by an S3/MinIO data-connection
+# storage.key/path (see generate_snapshot.py's resolve_inference_service_storage).
+# Namespace-scoped and read-only, mirroring aibom-workload-data — no
+# permission on the storage.key Secret itself, only the InferenceService's
+# own declared storage path/URI string.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aibom-workload-inferenceservices
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aibom-workload-inferenceservices
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aibom-workload-inferenceservices
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:{{ .Release.Namespace }}
+---
+# Binds this namespace's aibom-postprocess ServiceAccount to the
+# cluster-scoped aibom-postprocess-images ClusterRole (installed once by the
+# aibom-webhook chart -- see its postprocess-clusterrole.yaml), giving the
+# postprocess Job read access to OpenShift's cluster-scoped Image objects for
+# git-provenance detection. Named per-namespace, like the image-puller
+# RoleBinding below, since ClusterRoleBindings are themselves cluster-scoped
+# and each namespace needs its own.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aibom-postprocess-images-{{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aibom-postprocess-images
+subjects:
+  - kind: ServiceAccount
+    name: aibom-postprocess
+    namespace: {{ .Release.Namespace }}
+---
+# Grants pods in this namespace pull access to images in the aibom-system
+# namespace. OpenShift's system:image-puller role must be bound from the
+# image's own namespace, so this RoleBinding is deliberately created in
+# .Values.aibomSystemNamespace instead of .Release.Namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aibom-image-puller-{{ .Release.Namespace }}
+  namespace: {{ .Values.aibomSystemNamespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:image-puller
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:{{ .Release.Namespace }}

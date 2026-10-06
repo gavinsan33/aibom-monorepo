@@ -1,0 +1,143 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/gavinsan33/aibom-webhook-service/internal/config"
+	"github.com/gavinsan33/aibom-webhook-service/internal/watcher"
+	"github.com/gavinsan33/aibom-webhook-service/internal/webhook"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+)
+
+func main() {
+	cfg := config.Config{}
+
+	flag.StringVar(&cfg.TLSCertPath, "tls-cert", "/certs/tls.crt", "path to TLS certificate")
+	flag.StringVar(&cfg.TLSKeyPath, "tls-key", "/certs/tls.key", "path to TLS private key")
+	flag.IntVar(&cfg.Port, "port", 8443, "webhook server port")
+	flag.StringVar(&cfg.DiscoveryImage, "discovery-image", "pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime", "image for the discovery init container")
+	flag.BoolVar(&cfg.DatasetDetection, "dataset-detection", true, "inject dataset detection hooks into application containers")
+	flag.BoolVar(&cfg.EnableWatcher, "enable-watcher", true, "start the Job completion watcher")
+	flag.StringVar(&cfg.PostprocessImage, "postprocess-image", "busybox:latest", "image for postprocess Jobs")
+	flag.StringVar(&cfg.TrustedWatcherIdentity, "trusted-watcher-identity", "", "full username (e.g. system:serviceaccount:aibom-system:aibom-webhook) of this binary's own watcher identity, used to verify a Job claiming aibom.io/postprocess-for was actually created by the watcher; empty disables the check")
+	flag.StringVar(&cfg.TrustedJobControllerIdentity, "trusted-job-controller-identity", "", "full username the cluster's built-in Job controller uses when creating a Job's pods (commonly system:serviceaccount:kube-system:job-controller, but verify on your own cluster -- it depends on kube-controller-manager's --use-service-account-credentials flag); empty disables this extra check, leaving only the weaker ownerReference-only check")
+	flag.StringVar(&cfg.PrometheusURL, "prometheus-url", "https://thanos-querier.openshift-monitoring.svc:9091", "Prometheus/Thanos endpoint the postprocess Job queries for telemetry (empty disables telemetry collection)")
+	flag.StringVar(&cfg.GrafanaURL, "grafana-url", "", "Grafana base URL, used only to build a clickable Explore link in the AIBOM (telemetry itself always queries prometheus-url directly); empty omits the link")
+	flag.StringVar(&cfg.GrafanaDatasourceUID, "grafana-datasource-uid", "", "UID of the Grafana datasource pointing at prometheus-url, needed to build the Explore link above")
+	flag.BoolVar(&cfg.DebugKeepPostprocessJobs, "debug-keep-postprocess-jobs", false, "skip deleting succeeded postprocess Jobs/data ConfigMaps, for inspecting their logs/state after the fact (leaks one of each per completed workload — not for routine production use)")
+	flag.BoolVar(&cfg.DebugTelemetryAllPods, "debug-telemetry-all-pods", false, "postprocess Jobs query Prometheus telemetry for every pod regardless of detected GPU count (for local testing on clusters with no real GPU hardware, e.g. kind — not for routine production use)")
+	flag.StringVar(&cfg.DatasetSidecarImage, "dataset-sidecar-image", "python:3.12-slim", "image for the dataset-signing sidecar container")
+	flag.Parse()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if cfg.TrustedWatcherIdentity == "" {
+		log.Printf("WARNING: --trusted-watcher-identity not set; aibom.io/postprocess-for spoofing protection is disabled")
+	}
+
+	mutator := webhook.NewMutator(cfg.DiscoveryImage, cfg.DatasetDetection, cfg.TrustedJobControllerIdentity)
+	mutator.DatasetSidecarImage = cfg.DatasetSidecarImage
+
+	// Built unconditionally (not gated on cfg.EnableWatcher) since the
+	// mutator itself now needs a clientset too, to provision per-job
+	// workload identities at admission time (see identity.go's
+	// ensureWorkloadIdentity). A failure here degrades both the watcher and
+	// identity provisioning the same way: logged, and Mutate falls back to
+	// each pod's own ServiceAccount rather than blocking admission.
+	clientset, err := buildClientset()
+	if err != nil {
+		log.Printf("WARNING: failed to create Kubernetes clientset, watcher and per-job identity provisioning disabled: %v", err)
+	} else {
+		mutator.Clientset = clientset
+	}
+
+	handler := webhook.NewHandler(mutator, cfg.TrustedWatcherIdentity)
+
+	mux := http.NewServeMux()
+	mux.Handle("/mutate", handler)
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
+
+	go func() {
+		log.Printf("starting webhook server on :%d (discovery-image=%s, dataset-detection=%v)", cfg.Port, cfg.DiscoveryImage, cfg.DatasetDetection)
+		if err := server.ListenAndServeTLS(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	if cfg.EnableWatcher && clientset != nil {
+		w := watcher.New(clientset, watcher.Config{
+			PostprocessImage:         cfg.PostprocessImage,
+			PrometheusURL:            cfg.PrometheusURL,
+			GrafanaURL:               cfg.GrafanaURL,
+			GrafanaDatasourceUID:     cfg.GrafanaDatasourceUID,
+			DebugKeepPostprocessJobs: cfg.DebugKeepPostprocessJobs,
+			DebugTelemetryAllPods:    cfg.DebugTelemetryAllPods,
+		})
+		go func() {
+			if err := w.Start(ctx); err != nil {
+				log.Printf("watcher error: %v", err)
+			}
+		}()
+	}
+
+	<-stop
+	log.Println("shutting down...")
+
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("shutdown error: %v", err)
+	}
+	log.Println("server stopped")
+}
+
+func buildClientset() (*kubernetes.Clientset, error) {
+	restConfig, err := buildRestConfig()
+	if err != nil {
+		return nil, err
+	}
+	return kubernetes.NewForConfig(restConfig)
+}
+
+func buildRestConfig() (*rest.Config, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		kubeconfig := os.Getenv("KUBECONFIG")
+		if kubeconfig == "" {
+			home, _ := os.UserHomeDir()
+			kubeconfig = filepath.Join(home, ".kube", "config")
+		}
+		cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			return nil, fmt.Errorf("no in-cluster config and no kubeconfig found: %w", err)
+		}
+	}
+	return cfg, nil
+}

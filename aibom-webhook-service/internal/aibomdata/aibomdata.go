@@ -1,0 +1,180 @@
+// Package aibomdata holds the naming convention for the per-workload data
+// ConfigMap, shared between the webhook (which injects the ConfigMap name
+// into workload pods so they can write discovery/dataset data directly into
+// it) and the watcher (which reads/aggregates that same ConfigMap once the
+// workload completes).
+package aibomdata
+
+import "strings"
+
+const (
+	MaxJobNameLength  = 63
+	PostprocessSuffix = "-aibom-postprocess"
+	ConfigMapSuffix   = "-data"
+
+	// LabelPostprocessFor is set on postprocess Jobs (and now their pods) to name
+	// the workload they were generated for. The webhook checks this on pods to
+	// avoid re-instrumenting a postprocess Job's own pod, which would otherwise
+	// derive a second-generation data ConfigMap name from the postprocess Job's
+	// own name (see mutator.go's shouldMutate).
+	LabelPostprocessFor = "aibom.io/postprocess-for"
+
+	// LabelKServeInferenceService is the label KServe applies to every predictor
+	// pod, naming the owning InferenceService. For a predictor pod already
+	// instrumented via the requestsGPU fallback, it lets the watcher look up
+	// that InferenceService to resolve model identity for storage.key/path-based
+	// (S3/MinIO data-connection) deployments, which carry no CLI args to parse.
+	LabelKServeInferenceService = "serving.kserve.io/inferenceservice"
+
+	// AnnotationKServeStorageSourceURI is set by KServe on a predictor pod's
+	// template to the InferenceService's storageUri. The webhook reads it to
+	// find a pvc:// model source at admission time without depending on
+	// ordering relative to KServe's own pod mutator (this webhook's
+	// configuration name sorts before KServe's, so the pod has no model
+	// volume mount yet when it's admitted here).
+	AnnotationKServeStorageSourceURI = "internal.serving.kserve.io/storage-initializer-sourceuri"
+
+	// DiscoverySigningKeySecretName is created per workload namespace by the
+	// aibom-workload-namespace chart (templates/signing.yaml). The webhook
+	// mounts it only into the discovery init container (never an app
+	// container) so generate_snapshot.py can HMAC-sign discovery-<pod>.json;
+	// the watcher reads the same Secret (via RBAC scoped to this exact name,
+	// see clusterrole.yaml) to verify that signature before trusting a pod's
+	// hardware data enough to merge it into the aggregate discovery.json.
+	DiscoverySigningKeySecretName = "aibom-discovery-hmac-key"
+
+	// DiscoverySigningKeyDataKey is the key within that Secret's data map.
+	DiscoverySigningKeyDataKey = "hmac-key"
+
+	// DatasetSigningKeySecretName is the dataset-data counterpart to
+	// DiscoverySigningKeySecretName, created by the same
+	// aibom-workload-namespace chart. Mounted only into the
+	// aibom-dataset-sidecar container (never the app container, and never
+	// the discovery init container either) so dataset_sidecar.py can sign
+	// dataset-<pod>.json. Kept as a separate Secret/key from the discovery
+	// one deliberately: this sidecar and the discovery init container are
+	// different processes with different inputs, so a compromise of one
+	// doesn't need to also invalidate trust in data signed by the other.
+	DatasetSigningKeySecretName = "aibom-dataset-hmac-key"
+
+	// DatasetSigningKeyDataKey is the key within that Secret's data map.
+	DatasetSigningKeyDataKey = "hmac-key"
+
+	// CompiledSigningKeySecretName holds the Ed25519 private key
+	// postprocess.py signs the compiled AIBOM document with, created per
+	// workload namespace by aibom-workload-namespace's templates/signing.yaml.
+	// Unlike DiscoverySigningKeySecretName/DatasetSigningKeyDataKey (HMAC,
+	// verified by the watcher -- an equally-trusted process), this AIBOM's
+	// intended verifiers are outside the cluster's trust boundary entirely
+	// (oc-aibom, downstream tooling reading an archived copy) -- an
+	// asymmetric key lets them verify without being able to forge a
+	// signature themselves. The watcher never reads this Secret's contents;
+	// it only mounts it (read-only) into the postprocess Job.
+	CompiledSigningKeySecretName = "aibom-compiled-signing-key"
+
+	// CompiledSigningKeyDataKey is the key within that Secret's data map --
+	// a PEM-encoded PKCS8 Ed25519 private key.
+	CompiledSigningKeyDataKey = "ed25519-key"
+
+	// WorkloadIdentitySuffix names the per-job ServiceAccount/Role/
+	// RoleBinding/Secret the webhook provisions at admission time (see
+	// internal/webhook/identity.go's ensureWorkloadIdentity) so the
+	// discovery init container and the dataset sidecar authenticate as an
+	// identity scoped via resourceNames to exactly this job's own data
+	// ConfigMap, instead of sharing whatever ServiceAccount the pod runs as
+	// (which also carries any image-pull or cloud IAM federation that
+	// identity needs, so it can't just be overridden). The app container
+	// itself is never given this identity at all -- see #47, it no longer
+	// talks to the Kubernetes API for this purpose. Only ever created for
+	// Job-owned pods, where triggerName is known at admission; bare GPU
+	// pods (e.g. KServe predictors) fall back to the broader namespace-wide
+	// aibom-workload-data Role, since their final pod name -- and so the
+	// ConfigMap this Role would need to name -- doesn't exist yet at
+	// admission time.
+	WorkloadIdentitySuffix = "-aibom-workload-identity"
+
+	// PostprocessServiceAccountName is the ServiceAccount postprocess.py's
+	// Job always runs as, created per workload namespace by rbac.yaml. A
+	// single constant here (rather than separate string literals in
+	// watcher.go and internal/webhook/configmapguard.go) so the watcher
+	// (which sets it on the Job spec) and the webhook (which trusts it as
+	// the only identity allowed to write CompiledSigningPublicKeyConfigMapName)
+	// can't drift apart.
+	PostprocessServiceAccountName = "aibom-postprocess"
+
+	// CompiledSigningPublicKeyConfigMapName is the cluster-side anchor
+	// postprocess.py publishes the compiled-AIBOM Ed25519 public key to
+	// (see sign_aibom / CLAUDE.md's Compiled AIBOM Signing), so a verifier
+	// (oc-aibom) checking an AIBOM's embedded signaturePublicKey has
+	// something to cross-check it against beyond trusting whatever key a
+	// given document claims for itself. ValidateSigningPublicKeyConfigMap
+	// (internal/webhook/configmapguard.go) denies any create/update of this
+	// exact ConfigMap name from an identity other than
+	// PostprocessServiceAccountName in that same namespace -- without that
+	// check, rbac.yaml's broad aibom-workload-data Role (bound to every
+	// ServiceAccount in the namespace, including the workload's own,
+	// untrusted app container) would let a training pod overwrite this
+	// anchor with an attacker-controlled key, making a forged AIBOM signed
+	// with the matching private key verify as fully trusted.
+	CompiledSigningPublicKeyConfigMapName = "aibom-compiled-signing-public-key"
+
+	// CompiledSigningPublicKeyDataKey is the key within that ConfigMap's
+	// data map holding the base64 raw Ed25519 public key.
+	CompiledSigningPublicKeyDataKey = "ed25519-public-key"
+)
+
+// truncatedTriggerBase truncates triggerName to the narrowest budget any of
+// PostprocessJobName/ConfigMapName/WorkloadIdentityName need (i.e. the
+// longest suffix among them, currently WorkloadIdentitySuffix), and applies
+// it uniformly. All three names are derived from this single shared base
+// rather than each re-truncating triggerName to their own suffix's budget:
+// otherwise two distinct trigger names sharing a prefix up to the
+// shorter-suffix cutoff but differing beyond it would produce the same
+// WorkloadIdentityName while getting different ConfigMapNames -- letting
+// one job's identity cleanup (see watcher.go's collectAIBOM) delete the
+// ServiceAccount/Role/RoleBinding/Secret out from under an unrelated job
+// that happens to collide on the truncated name.
+//
+// scripts/aibom-scripts/k8s_api.py's resolve_data_configmap_name() (used by
+// a bare/ReplicaSet-owned pod's discovery init container, which can't rely
+// on the webhook-injected AIBOM_DATA_CONFIGMAP env var -- see that
+// function's docstring) independently recomputes this same ConfigMap name
+// from POD_NAME and must budget against this exact same length
+// (_WORKLOAD_IDENTITY_SUFFIX_LEN there). A previous mismatch (Python
+// budgeted against its own, shorter _POSTPROCESS_SUFFIX instead) meant the
+// discovery init container wrote into a different ConfigMap than this
+// watcher read from -- silently, since a not-found ConfigMap Get() isn't
+// logged as an error -- so every such pod's AIBOM had empty
+// discovery/environment/pod data with no visible failure at all.
+func truncatedTriggerBase(triggerName string) string {
+	maxBase := MaxJobNameLength - len(WorkloadIdentitySuffix)
+	if len(triggerName) > maxBase {
+		triggerName = triggerName[:maxBase]
+	}
+	return strings.TrimRight(triggerName, "-")
+}
+
+// PostprocessJobName returns the deterministic postprocess Job name for a
+// given trigger name (an owning Job's name, or a bare pod's own name),
+// truncated to fit Kubernetes' 63-character name limit.
+func PostprocessJobName(triggerName string) string {
+	return truncatedTriggerBase(triggerName) + PostprocessSuffix
+}
+
+// ConfigMapName returns the deterministic data ConfigMap name for a given
+// trigger name, truncated to fit Kubernetes' 253-character name limit.
+func ConfigMapName(triggerName string) string {
+	name := truncatedTriggerBase(triggerName) + PostprocessSuffix + ConfigMapSuffix
+	if len(name) > 253 {
+		name = strings.TrimRight(name[:253], "-")
+	}
+	return name
+}
+
+// WorkloadIdentityName returns the deterministic name for the per-job
+// ServiceAccount/Role/RoleBinding/Secret quartet, truncated to fit
+// Kubernetes' 63-character name limit (ServiceAccount names, like Job
+// names, are also used as label values elsewhere).
+func WorkloadIdentityName(triggerName string) string {
+	return truncatedTriggerBase(triggerName) + WorkloadIdentitySuffix
+}

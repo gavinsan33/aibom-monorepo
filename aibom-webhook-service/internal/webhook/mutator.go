@@ -1,0 +1,962 @@
+package webhook
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/gavinsan33/aibom-webhook-service/internal/aibomdata"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/kubernetes"
+)
+
+// workloadIdentityProvisionTimeout bounds ensurePodWorkloadIdentity's
+// Kubernetes API calls, which run synchronously in the admission path — a
+// hanging apiserver call here must not indefinitely delay pod admission.
+const workloadIdentityProvisionTimeout = 5 * time.Second
+
+var matchedOwnerKinds = map[string]bool{
+	"Job":        true,
+	"JobSet":     true,
+	"PyTorchJob": true,
+	"RayJob":     true,
+}
+
+type Mutator struct {
+	DiscoveryImage   string
+	DatasetDetection bool
+
+	// DatasetSidecarImage runs dataset_sidecar.py (see #47) -- unlike
+	// DiscoveryImage, this never needs GPU tooling or a training
+	// framework, only Python's stdlib, so it defaults to a minimal image
+	// rather than reusing DiscoveryImage. Exported so main.go can override
+	// it from a flag, same as DiscoveryImage/PostprocessImage.
+	DatasetSidecarImage string
+
+	// Clientset, if set, lets Mutate provision a per-job workload identity
+	// (see identity.go's ensureWorkloadIdentity) scoped to exactly this
+	// job's own data ConfigMap. Left nil in tests that don't exercise this
+	// path and treated the same as any other identity-provisioning failure:
+	// Mutate falls back to the pod's own (shared, namespace-wide) identity
+	// rather than failing admission.
+	Clientset kubernetes.Interface
+
+	// TrustedJobControllerIdentity, if set, is the full username (e.g.
+	// "system:serviceaccount:kube-system:job-controller") the built-in
+	// Job controller uses when creating a Job's pods on this cluster. It
+	// tightens isPostprocessPod's Job-owner check: a Job-kind
+	// ownerReference alone can be fabricated by a raw Pod submission (see
+	// isPostprocessPod's doc comment), but a fabricated ownerReference
+	// can't also make Kubernetes report request.userInfo as the real Job
+	// controller. Left empty, this extra check is skipped -- the
+	// owner-reference-only check still applies -- since the exact
+	// identity string isn't guaranteed across every cluster/distro (it
+	// depends on kube-controller-manager's --use-service-account-
+	// credentials flag) and defaulting to a guess risks misclassifying a
+	// real postprocess pod as not one.
+	TrustedJobControllerIdentity string
+}
+
+type PatchOperation struct {
+	Op    string      `json:"op"`
+	Path  string      `json:"path"`
+	Value interface{} `json:"value,omitempty"`
+}
+
+func NewMutator(discoveryImage string, datasetDetection bool, trustedJobControllerIdentity string) *Mutator {
+	return &Mutator{
+		DiscoveryImage:               discoveryImage,
+		DatasetDetection:             datasetDetection,
+		DatasetSidecarImage:          "python:3.12-slim",
+		TrustedJobControllerIdentity: trustedJobControllerIdentity,
+	}
+}
+
+// Mutate decides whether pod should be instrumented and returns the patches
+// to do so. requesterUsername is the AdmissionReview's request.userInfo.username
+// for this pod's own creation -- used only by isPostprocessPod's optional
+// Job-controller identity check (see TrustedJobControllerIdentity).
+func (m *Mutator) Mutate(pod *corev1.Pod, requesterUsername string) ([]PatchOperation, error) {
+	if !m.shouldMutate(pod, requesterUsername) {
+		// A workload that doesn't qualify for instrumentation may still have
+		// pre-set aibom.io/instrumented / aibom.io/instrumented-by itself
+		// (see shouldMutate's doc comment on why the value can't be
+		// trusted). Left alone, that false claim would still reach etcd on
+		// this pod, and the watcher selects pods to postprocess by
+		// aibom.io/instrumented=true (see watcher.go) -- so an uninstrumented
+		// pod could masquerade as having been properly collected, and the
+		// watcher would compile an AIBOM from data that was never actually
+		// gathered. isPostprocessPod's own pods never carry this label at
+		// all, so this is always safe to run on the "not qualifying" path.
+		return stripSpoofedInstrumentationClaims(pod), nil
+	}
+
+	var patches []PatchOperation
+
+	// Provision (or fall back from) a per-job identity scoped to exactly
+	// this job's own data ConfigMap -- see ensurePodWorkloadIdentity and
+	// identity.go's ensureWorkloadIdentity. identitySecretName is "" when
+	// this pod has no owner with a name known at admission time (e.g. a
+	// bare KServe predictor pod) or provisioning failed, in which case
+	// buildTokenVolume below falls back to today's behavior: a projected
+	// token for the pod's own (shared, namespace-wide) ServiceAccount.
+	identitySecretName := m.ensurePodWorkloadIdentity(pod)
+
+	// Add aibom-data emptyDir volume
+	patches = appendVolume(patches, pod, buildAIBOMVolume())
+
+	// Add aibom-scripts ConfigMap volume
+	patches = appendVolume(patches, pod, buildScriptsVolume())
+
+	// Add our own Kubernetes API token volume — see buildTokenVolume's doc
+	// comment for why the pod's own (possibly absent) automounted token
+	// can't be relied on for containers this webhook adds.
+	patches = appendVolume(patches, pod, buildTokenVolume(identitySecretName))
+
+	// Add the discovery signing key volume — mounted only into the discovery
+	// init container below (buildDiscoveryInitContainer), never into an app
+	// container, so the workload's own code never has access to it.
+	patches = appendVolume(patches, pod, buildDiscoverySigningKeyVolume())
+
+	// A KServe predictor whose model is pre-pulled onto a PVC (pvc://) gets
+	// that PVC mounted read-only into the discovery init container too, so
+	// generate_snapshot.py can read the model's own metadata files (see
+	// modelSourcePVC).
+	modelClaim, modelSubPath, hasModelSource := modelSourcePVC(pod)
+	if hasModelSource {
+		patches = appendVolume(patches, pod, buildModelSourceVolume(modelClaim))
+	}
+
+	// Add discovery init container
+	discovery := m.buildDiscoveryInitContainer(pod)
+	if hasModelSource {
+		discovery.VolumeMounts = append(discovery.VolumeMounts, modelSourceVolumeMount(modelSubPath))
+		discovery.Env = append(discovery.Env, corev1.EnvVar{Name: "AIBOM_MODEL_DIR", Value: modelSourceMountPath})
+	}
+	patches = appendInitContainer(patches, pod, discovery)
+
+	// Inject dataset detector into application containers, and the sidecar
+	// that signs and publishes what it detects (see #47) -- gated on the
+	// same flag, since without dataset detection nothing ever gets written
+	// for the sidecar to watch. The app container itself gets no
+	// Kubernetes API credentials for this at all anymore (contrast with
+	// the discovery init container, which still shares identitySecretName
+	// via aibom-token) -- see buildDatasetDetectorPatches.
+	if m.DatasetDetection {
+		for i := range pod.Spec.Containers {
+			patches = append(patches, m.buildDatasetDetectorPatches(pod, i)...)
+		}
+		patches = appendVolume(patches, pod, buildDatasetSigningKeyVolume())
+		patches = appendInitContainer(patches, pod, m.buildDatasetSidecarContainer(pod))
+	}
+
+	// Add instrumented label
+	if pod.Labels == nil {
+		patches = append(patches, PatchOperation{
+			Op:   "add",
+			Path: "/metadata/labels",
+			Value: map[string]string{
+				"aibom.io/instrumented": "true",
+			},
+		})
+	} else {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/metadata/labels/aibom.io~1instrumented",
+			Value: "true",
+		})
+	}
+
+	// Add instrumented-by annotation
+	if pod.Annotations == nil {
+		patches = append(patches, PatchOperation{
+			Op:   "add",
+			Path: "/metadata/annotations",
+			Value: map[string]string{
+				"aibom.io/instrumented-by": "webhook",
+			},
+		})
+	} else {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/metadata/annotations/aibom.io~1instrumented-by",
+			Value: "webhook",
+		})
+	}
+
+	return patches, nil
+}
+
+// shouldMutate reports whether pod should be instrumented. It deliberately
+// does NOT consult any aibom.io/instrumented value already present on the
+// incoming pod: this webhook's MutatingWebhookConfiguration only matches
+// CREATE operations with reinvocationPolicy: Never, so there is no
+// legitimate scenario where this webhook has already run once and set that
+// label earlier in the same admission chain. Labels are part of the object
+// the requester submits, so trusting a pre-existing "true" value here would
+// let any workload dodge instrumentation for free simply by pre-setting the
+// label the webhook itself would otherwise add.
+func (m *Mutator) shouldMutate(pod *corev1.Pod, requesterUsername string) bool {
+	if m.isPostprocessPod(pod, requesterUsername) {
+		return false
+	}
+	return hasMatchingOwner(pod) || requestsGPU(pod)
+}
+
+// isPostprocessPod reports whether this pod belongs to a postprocess Job
+// itself (labeled by the watcher via its pod template, see watcher.go's
+// createPostprocessJobCore). Without this check, the postprocess Job's own
+// pod — owned by a plain batch/v1 Job like any other matched workload — would
+// get instrumented too, deriving a second-generation, truncated data
+// ConfigMap name from the postprocess Job's own name instead of the original
+// workload's.
+//
+// A real postprocess pod is always owned by a plain batch/v1 Job (the
+// watcher never creates one any other way), so this also requires a Job
+// owner reference before trusting the label — see SanitizeJobPostprocessLabel
+// for why the label alone, from a Job's pod template, can now be trusted
+// once it survives that check.
+//
+// A Job-kind ownerReference alone can still be forged: Kubernetes doesn't
+// validate that a submitted object's ownerReferences point to anything real,
+// so a raw Pod submitted directly (never created by any Job at all, and so
+// never seen by the Job-admission check) could hand-craft a fake one
+// alongside the label. When m.TrustedJobControllerIdentity is configured,
+// this closes that gap too: a fabricated ownerReference can't also make
+// Kubernetes report requesterUsername as the real Job controller, since that
+// value comes from actual authentication on this admission request, not
+// anything the submitted object controls. Left unconfigured (the default —
+// see the field's doc comment for why), only the weaker ownerReference-only
+// check applies, matching this function's previous behavior.
+func (m *Mutator) isPostprocessPod(pod *corev1.Pod, requesterUsername string) bool {
+	if pod.Labels[aibomdata.LabelPostprocessFor] == "" {
+		return false
+	}
+	if !hasJobOwner(pod) {
+		return false
+	}
+	if m.TrustedJobControllerIdentity == "" {
+		return true
+	}
+	return requesterUsername == m.TrustedJobControllerIdentity
+}
+
+// hasJobOwner reports whether pod has a plain batch/v1 Job in its
+// ownerReferences — narrower than hasMatchingOwner, which also matches
+// JobSet/PyTorchJob/RayJob; postprocess Jobs are always plain Jobs.
+func hasJobOwner(pod *corev1.Pod) bool {
+	for _, ref := range pod.OwnerReferences {
+		if ref.Kind == "Job" {
+			return true
+		}
+	}
+	return false
+}
+
+// stripSpoofedInstrumentationClaims returns JSON patches removing any
+// aibom.io/instrumented label and aibom.io/instrumented-by annotation
+// already present on a pod the webhook has decided not to instrument. See
+// Mutate's call site for why a requester-supplied claim here can't be left
+// in place. JSON Patch "remove" fails admission if the target path doesn't
+// exist, so each removal is only emitted when the key is actually present.
+func stripSpoofedInstrumentationClaims(pod *corev1.Pod) []PatchOperation {
+	var patches []PatchOperation
+	if _, ok := pod.Labels["aibom.io/instrumented"]; ok {
+		patches = append(patches, PatchOperation{
+			Op:   "remove",
+			Path: "/metadata/labels/aibom.io~1instrumented",
+		})
+	}
+	if _, ok := pod.Annotations["aibom.io/instrumented-by"]; ok {
+		patches = append(patches, PatchOperation{
+			Op:   "remove",
+			Path: "/metadata/annotations/aibom.io~1instrumented-by",
+		})
+	}
+	return patches
+}
+
+func hasMatchingOwner(pod *corev1.Pod) bool {
+	for _, ref := range pod.OwnerReferences {
+		if matchedOwnerKinds[ref.Kind] {
+			return true
+		}
+	}
+	return false
+}
+
+// ensurePodWorkloadIdentity provisions a per-job identity for pod (see
+// identity.go's ensureWorkloadIdentity) and returns the Secret name to
+// mount as this pod's token, or "" if that isn't applicable -- no
+// Clientset configured, or the pod has no owner whose name is known at
+// admission time (see dataConfigMapEnvVar's doc comment: a bare pod's own
+// name doesn't exist yet when it's created via generateName) -- or
+// provisioning failed. Any failure here is logged and swallowed, never
+// returned as a Mutate error: this service fails open (failurePolicy:
+// Ignore), and a Kubernetes API hiccup while provisioning RBAC must not
+// block the pod it's trying to instrument.
+func (m *Mutator) ensurePodWorkloadIdentity(pod *corev1.Pod) string {
+	if m.Clientset == nil {
+		return ""
+	}
+	if !hasMatchingOwner(pod) {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workloadIdentityProvisionTimeout)
+	defer cancel()
+
+	trigger := triggerName(pod)
+	configMapName := aibomdata.ConfigMapName(trigger)
+	secretName, err := ensureWorkloadIdentity(ctx, m.Clientset, pod.Namespace, trigger, configMapName)
+	if err != nil {
+		log.Printf("warning: could not provision per-job workload identity for %s/%s (job %s): %v; falling back to shared ServiceAccount token", pod.Namespace, pod.Name, trigger, err)
+		return ""
+	}
+	return secretName
+}
+
+// triggerName returns the identity the watcher will later use to name the
+// postprocess Job/data ConfigMap for this pod: the owning Job's name for
+// Job/JobSet/PyTorchJob/RayJob-owned pods, or the pod's own name for bare
+// GPU pods (e.g. KServe predictors) — mirroring watcher.go's onJobEvent
+// (Job path) and onPodEvent (bare pod path).
+func triggerName(pod *corev1.Pod) string {
+	for _, ref := range pod.OwnerReferences {
+		if matchedOwnerKinds[ref.Kind] {
+			return ref.Name
+		}
+	}
+	return pod.Name
+}
+
+// dataConfigMapEnvVar returns the static AIBOM_DATA_CONFIGMAP env var, but
+// only when triggerName(pod) is reliably known at admission time — i.e. the
+// pod has a matching owner (its name comes from ownerReferences, already set
+// before admission). For a bare/ReplicaSet-owned pod with no such owner
+// (e.g. a KServe predictor), triggerName falls back to pod.Name, which is
+// EMPTY at this point for any pod created via generateName — the API server
+// hasn't assigned the real name yet when this webhook runs. Baking in
+// aibomdata.ConfigMapName("") here would silently point every write at a
+// malformed "-aibom-postprocess-data" ConfigMap. Instead, ok is false and the
+// caller omits the env var entirely; k8s_api.resolve_data_configmap_name()
+// derives the same name at runtime from POD_NAME (a downward API value,
+// resolved by the kubelet after the real name exists).
+func dataConfigMapEnvVar(pod *corev1.Pod) (corev1.EnvVar, bool) {
+	if !hasMatchingOwner(pod) {
+		return corev1.EnvVar{}, false
+	}
+	return corev1.EnvVar{Name: "AIBOM_DATA_CONFIGMAP", Value: aibomdata.ConfigMapName(triggerName(pod))}, true
+}
+
+func requestsGPU(pod *corev1.Pod) bool {
+	gpuResource := corev1.ResourceName("nvidia.com/gpu")
+	for i := range pod.Spec.Containers {
+		c := &pod.Spec.Containers[i]
+		if q, ok := c.Resources.Limits[gpuResource]; ok && q.Cmp(resource.MustParse("0")) > 0 {
+			return true
+		}
+		if q, ok := c.Resources.Requests[gpuResource]; ok && q.Cmp(resource.MustParse("0")) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Mutator) buildDiscoveryInitContainer(pod *corev1.Pod) corev1.Container {
+	env := []corev1.EnvVar{
+		downwardAPIEnv("POD_NAME", "metadata.name"),
+		downwardAPIEnv("POD_UID", "metadata.uid"),
+		downwardAPIEnv("POD_NAMESPACE", "metadata.namespace"),
+		downwardAPIEnv("POD_IP", "status.podIP"),
+		downwardAPIEnv("NODE_NAME", "spec.nodeName"),
+	}
+	if dataConfigMapEnv, ok := dataConfigMapEnvVar(pod); ok {
+		env = append(env, dataConfigMapEnv)
+	}
+	// Only pods KServe itself already labeled as a predictor get this one —
+	// a single-field label downward API reference fails pod admission
+	// outright if the referenced label isn't present on the pod, so this
+	// can't be added unconditionally for every workload kind (Job/JobSet/
+	// PyTorchJob/RayJob pods have no such label).
+	if pod.Labels[aibomdata.LabelKServeInferenceService] != "" {
+		env = append(env, downwardAPIEnv(
+			"INFERENCESERVICE_NAME",
+			fmt.Sprintf("metadata.labels['%s']", aibomdata.LabelKServeInferenceService),
+		))
+	}
+
+	c := corev1.Container{
+		Name:    "aibom-discovery",
+		Image:   m.DiscoveryImage,
+		Command: []string{"/bin/bash", "-c"},
+		Args:    []string{"python3 /scripts/generate_snapshot.py"},
+		Env:     env,
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "aibom-data", MountPath: "/tmp/result"},
+			{Name: "aibom-scripts", MountPath: "/scripts", ReadOnly: true},
+			aibomTokenVolumeMount(),
+			discoverySigningKeyVolumeMount(),
+		},
+	}
+
+	// Explicit cpu/memory requests AND limits, both of them: a namespace
+	// LimitRange backfills whatever a container leaves unset (default /
+	// defaultRequest), so without these an arbitrary workload namespace
+	// (e.g. one with defaults of 2 CPU/8Gi and default requests of
+	// 1 CPU/2Gi) would stamp its defaults onto this container and inflate
+	// the pod's scheduling footprint — init containers count toward a pod
+	// request as max(sum of containers, max of init containers) — even
+	// though generate_snapshot.py needs ~100Mi, not 8Gi. The cpu limit is
+	// a whole core rather than a smaller fraction on purpose: the script's
+	// CPU/memory benchmarks are single-threaded and meant to characterize
+	// the node, and a cgroup cpu quota below 1 core would throttle them
+	// into reporting container-limited rather than node-limited numbers.
+	c.Resources = corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+
+	// The init container runs before the app containers and needs
+	// nvidia-smi to see the GPUs the pod will actually get. The nvidia-smi
+	// binary and the NVML driver library it links against are not part of
+	// any base image (the CUDA runtime images ship libcuda's compat layer,
+	// not the driver) — the NVIDIA Container Toolkit injects both from the
+	// node's driver at container start, and on standard device-plugin
+	// setups that injection is exactly what the nvidia.com/gpu claim
+	// triggers (Allocate → NVIDIA_VISIBLE_DEVICES → runtime prestart hook),
+	// so the claim has to stay; a dcgm-exporter-style privileged + host
+	// /dev container works without one only because it bundles its own
+	// libraries, sets NVIDIA_VISIBLE_DEVICES itself, and runs privileged,
+	// none of which apply to an unprivileged init container in an
+	// arbitrary base image. Mirroring costs the pod no extra GPUs: a pod's
+	// per-resource scheduling requirement is max(sum of containers, max of
+	// init containers), and init containers never run concurrently with
+	// the app containers.
+	if gpuRes := podGPUResource(pod); gpuRes != nil {
+		c.Resources.Limits[corev1.ResourceName("nvidia.com/gpu")] = *gpuRes
+	}
+
+	return c
+}
+
+// podGPUResource returns the pod's total nvidia.com/gpu allocation — the
+// sum of each container's effective claim (its limit if set, else its
+// request) — i.e. exactly what the scheduler places the pod against
+// (for extended resources, unset requests default from limits). Summing
+// rather than returning the first container's claim matters for
+// multi-container pods (e.g. 1 GPU per container): the discovery init
+// container must mirror the whole total or the device plugin hands it a
+// subset of the pod's GPUs and nvidia-smi under-reports gpu_count/
+// gpu_models.
+func podGPUResource(pod *corev1.Pod) *resource.Quantity {
+	gpuResource := corev1.ResourceName("nvidia.com/gpu")
+	total := resource.Quantity{}
+	found := false
+	for i := range pod.Spec.Containers {
+		var q *resource.Quantity
+		if v, ok := pod.Spec.Containers[i].Resources.Limits[gpuResource]; ok && v.Cmp(resource.MustParse("0")) > 0 {
+			q = &v
+		} else if v, ok := pod.Spec.Containers[i].Resources.Requests[gpuResource]; ok && v.Cmp(resource.MustParse("0")) > 0 {
+			q = &v
+		}
+		if q == nil {
+			continue
+		}
+		found = true
+		total.Add(*q)
+	}
+	if !found {
+		return nil
+	}
+	return &total
+}
+
+// containerRestartPolicyAlways is a package-level var (rather than an
+// inline &corev1.ContainerRestartPolicyAlways) since Go doesn't allow
+// taking the address of a typed constant directly.
+var containerRestartPolicyAlways = corev1.ContainerRestartPolicyAlways
+
+// buildDatasetSidecarContainer builds the aibom-dataset-sidecar container
+// (dataset_sidecar.py, see #47): a Kubernetes native sidecar (an init
+// container with RestartPolicy: Always), which the kubelet starts without
+// blocking the rest of the pod on it completing, keeps running for the
+// pod's whole lifetime, and only terminates after every main container has
+// already exited -- letting it catch runtime_detector.py's
+// atexit-triggered final flush before the pod goes away.
+//
+// It shares the discovery init container's identity (aibom-token) rather
+// than getting a separate one: both are platform-controlled processes, and
+// the isolation that actually matters (per #43) is job-vs-job, not
+// discovery-vs-sidecar, so provisioning a second per-job ServiceAccount
+// here would add nothing.
+func (m *Mutator) buildDatasetSidecarContainer(pod *corev1.Pod) corev1.Container {
+	env := []corev1.EnvVar{
+		downwardAPIEnv("POD_NAME", "metadata.name"),
+		downwardAPIEnv("POD_NAMESPACE", "metadata.namespace"),
+		{Name: "AIBOM_DATASET_OUTPUT", Value: "/tmp/aibom/dataset_detected.json"},
+	}
+	if dataConfigMapEnv, ok := dataConfigMapEnvVar(pod); ok {
+		env = append(env, dataConfigMapEnv)
+	}
+
+	// Explicit cpu/memory requests AND limits, both of them: a namespace
+	// LimitRange backfills whatever a container leaves unset (default /
+	// defaultRequest), so without these an arbitrary workload namespace
+	// (e.g. one with defaults of 2 CPU/8Gi and default requests of
+	// 1 CPU/2Gi) would stamp its defaults onto this container. Unlike the
+	// discovery init container (which exits shortly after starting the
+	// pod), this one runs for the pod's entire lifetime, so its request
+	// rides on the pod's scheduling footprint the whole time — keep it
+	// as small as the poll/sign/publish loop actually is.
+	resources := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("200m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+
+	return corev1.Container{
+		Name:          "aibom-dataset-sidecar",
+		Image:         m.DatasetSidecarImage,
+		RestartPolicy: &containerRestartPolicyAlways,
+		Command:       []string{"/bin/bash", "-c"},
+		// A namespace whose aibom-workload-namespace chart install predates
+		// this container's addition has an empty dataset_sidecar.py key in
+		// its aibom-scripts ConfigMap (see values.yaml's scripts.datasetSidecar
+		// default) -- mirroring how buildDatasetSigningKeyVolume's Secret
+		// mount degrades gracefully for the same rollout window. Unlike that
+		// Secret mount, running an empty/missing script isn't a graceful
+		// no-op: python3 would just exit 0 immediately, and a native sidecar
+		// (RestartPolicy: Always) that exits gets restarted by the kubelet
+		// in a tight backoff loop. Guard for that here instead, idling
+		// quietly until the namespace is upgraded.
+		Args: []string{
+			"if [ -s /scripts/dataset_sidecar.py ]; then " +
+				"exec python3 /scripts/dataset_sidecar.py; " +
+				"else " +
+				"echo 'aibom-dataset-sidecar: dataset_sidecar.py not configured for this namespace yet, idling' >&2; " +
+				"exec sleep infinity; " +
+				"fi",
+		},
+		Env:       env,
+		Resources: resources,
+		VolumeMounts: []corev1.VolumeMount{
+			// Same aibom-data emptyDir the app container writes
+			// dataset_detected.json into (mounted there at the same
+			// "/tmp/aibom" path -- see buildDatasetDetectorPatches), just
+			// read-only here since this container only ever reads it.
+			{Name: "aibom-data", MountPath: "/tmp/aibom", ReadOnly: true},
+			{Name: "aibom-scripts", MountPath: "/scripts", ReadOnly: true},
+			aibomTokenVolumeMount(),
+			datasetSigningKeyVolumeMount(),
+		},
+	}
+}
+
+// buildDatasetDetectorPatches creates JSON patches to inject dataset detection
+// into a specific application container. It adds env vars for activation and
+// mounts the detector script as usercustomize.py so Python auto-imports it.
+func (m *Mutator) buildDatasetDetectorPatches(pod *corev1.Pod, containerIdx int) []PatchOperation {
+	var patches []PatchOperation
+	container := &pod.Spec.Containers[containerIdx]
+
+	// Build PYTHONPATH value, prepending to any existing value
+	pythonPath := "/aibom-hooks"
+	for _, env := range container.Env {
+		if env.Name == "PYTHONPATH" && env.Value != "" {
+			pythonPath = "/aibom-hooks:" + env.Value
+			break
+		}
+	}
+
+	// No AIBOM_DATA_CONFIGMAP here -- unlike the discovery init container
+	// and the dataset sidecar, this container no longer talks to the
+	// Kubernetes API at all (see #47), so it has no use for the ConfigMap
+	// name.
+	envVars := []corev1.EnvVar{
+		{Name: "AIBOM_DATASET_DETECT", Value: "1"},
+		{Name: "AIBOM_DEBUG", Value: "1"},
+		{Name: "AIBOM_DATASET_OUTPUT", Value: "/tmp/aibom/dataset_detected.json"},
+		downwardAPIEnv("POD_NAME", "metadata.name"),
+		downwardAPIEnv("POD_NAMESPACE", "metadata.namespace"),
+		{Name: "PYTHONPATH", Value: pythonPath},
+	}
+
+	envPath := fmt.Sprintf("/spec/containers/%d/env", containerIdx)
+	if len(container.Env) == 0 {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  envPath,
+			Value: envVars,
+		})
+	} else {
+		// If PYTHONPATH already exists, replace it; add the rest
+		pythonPathExists := false
+		for j, env := range container.Env {
+			if env.Name == "PYTHONPATH" {
+				patches = append(patches, PatchOperation{
+					Op:    "replace",
+					Path:  fmt.Sprintf("%s/%d/value", envPath, j),
+					Value: pythonPath,
+				})
+				pythonPathExists = true
+				break
+			}
+		}
+		for _, env := range envVars {
+			if env.Name == "PYTHONPATH" && pythonPathExists {
+				continue
+			}
+			patches = append(patches, PatchOperation{
+				Op:    "add",
+				Path:  envPath + "/-",
+				Value: env,
+			})
+		}
+	}
+
+	// Mount usercustomize.py (runtime detector) and the aibom-data volume
+	// it writes dataset_detected.json into. No k8s_api.py mount here
+	// anymore -- runtime_detector.py no longer talks to the Kubernetes API
+	// at all (see #47); the aibom-dataset-sidecar container reads this same
+	// aibom-data volume and performs the actual (signed) ConfigMap write
+	// instead.
+	mounts := []corev1.VolumeMount{
+		{
+			Name:      "aibom-scripts",
+			MountPath: "/aibom-hooks/usercustomize.py",
+			SubPath:   "runtime_detector.py",
+			ReadOnly:  true,
+		},
+		{
+			Name:      "aibom-data",
+			MountPath: "/tmp/aibom",
+		},
+	}
+
+	mountPath := fmt.Sprintf("/spec/containers/%d/volumeMounts", containerIdx)
+	if len(container.VolumeMounts) == 0 {
+		patches = append(patches, PatchOperation{
+			Op:    "add",
+			Path:  mountPath,
+			Value: mounts,
+		})
+	} else {
+		for _, mount := range mounts {
+			patches = append(patches, PatchOperation{
+				Op:    "add",
+				Path:  mountPath + "/-",
+				Value: mount,
+			})
+		}
+	}
+
+	// This container no longer needs any Kubernetes API access at all (see
+	// above), so strip its default automounted ServiceAccount token if the
+	// built-in ServiceAccount admission controller already mounted one --
+	// left in place, it would give this container the pod's own
+	// (namespace-wide, via aibom-workload-data) ConfigMap access, which is
+	// broader than the per-job identity this container used to be
+	// retargeted to before #47 removed its need for a token entirely. This
+	// is a straight removal, not a retarget: unlike the discovery init
+	// container and the dataset sidecar, this container has no legitimate
+	// remaining use for any token.
+	if idx := volumeMountIndexAtPath(container.VolumeMounts, aibomTokenVolumeMount().MountPath); idx != -1 {
+		patches = append(patches, PatchOperation{
+			Op:   "remove",
+			Path: fmt.Sprintf("/spec/containers/%d/volumeMounts/%d", containerIdx, idx),
+		})
+	}
+
+	return patches
+}
+
+func downwardAPIEnv(name, fieldPath string) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: name,
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: fieldPath},
+		},
+	}
+}
+
+func buildAIBOMVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "aibom-data",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	}
+}
+
+func buildScriptsVolume() corev1.Volume {
+	return corev1.Volume{
+		Name: "aibom-scripts",
+		VolumeSource: corev1.VolumeSource{
+			ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "aibom-scripts"},
+			},
+		},
+	}
+}
+
+// buildTokenVolume provisions our own copy of the standard "kube-api-access"
+// projected volume — the same three sources (SA token, cluster CA bundle,
+// namespace) the built-in ServiceAccount admission controller normally
+// projects automatically. That controller only mounts it into containers
+// already present in the pod spec when it runs; since we add the discovery
+// init container (and, for dataset detection, hooks into app containers)
+// via a mutating webhook patch afterward, those newly-added containers never
+// get the automatic one — this is true regardless of the pod's own
+// automountServiceAccountToken setting, since a container only gets a token
+// if it has an explicit volumeMount naming a token volume. Without this,
+// k8s_api.py (used by both generate_snapshot.py and runtime_detector.py) has
+// no token to authenticate with at all.
+//
+// identitySecretName, when non-empty, swaps the first source from a
+// ServiceAccountTokenProjection (necessarily for the pod's own
+// spec.serviceAccountName — see ensurePodWorkloadIdentity's doc comment for
+// why that identity can't just be overridden) to a SecretProjection reading
+// the token ensureWorkloadIdentity minted for a per-job identity scoped to
+// exactly this job's data ConfigMap. Either way the result lands at the
+// same "token" path, so k8s_api.py doesn't need to know which one it got.
+func buildTokenVolume(identitySecretName string) corev1.Volume {
+	var tokenSource corev1.VolumeProjection
+	if identitySecretName != "" {
+		tokenSource = corev1.VolumeProjection{
+			Secret: &corev1.SecretProjection{
+				LocalObjectReference: corev1.LocalObjectReference{Name: identitySecretName},
+				Items:                []corev1.KeyToPath{{Key: workloadIdentityTokenSecretKey, Path: "token"}},
+			},
+		}
+	} else {
+		expirationSeconds := int64(3600)
+		tokenSource = corev1.VolumeProjection{
+			ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+				Path:              "token",
+				ExpirationSeconds: &expirationSeconds,
+			},
+		}
+	}
+
+	return corev1.Volume{
+		Name: "aibom-token",
+		VolumeSource: corev1.VolumeSource{
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{
+					tokenSource,
+					{
+						ConfigMap: &corev1.ConfigMapProjection{
+							LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"},
+							Items:                []corev1.KeyToPath{{Key: "ca.crt", Path: "ca.crt"}},
+						},
+					},
+					{
+						DownwardAPI: &corev1.DownwardAPIProjection{
+							Items: []corev1.DownwardAPIVolumeFile{
+								{Path: "namespace", FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// aibomTokenVolumeMount mounts buildTokenVolume at the exact path k8s_api.py
+// expects (_SA_DIR), so it's indistinguishable from the token the
+// ServiceAccount admission controller would have auto-mounted.
+func aibomTokenVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      "aibom-token",
+		MountPath: "/var/run/secrets/kubernetes.io/serviceaccount",
+		ReadOnly:  true,
+	}
+}
+
+// buildDiscoverySigningKeyVolume is mounted as optional: a namespace that
+// hasn't been upgraded to a chart version carrying signing.yaml yet simply
+// has no such Secret, and generate_snapshot.py falls back to writing
+// unsigned discovery data (see its own missing-key handling) rather than
+// the pod failing to start.
+func buildDiscoverySigningKeyVolume() corev1.Volume {
+	optional := true
+	return corev1.Volume{
+		Name: "aibom-discovery-signing-key",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: aibomdata.DiscoverySigningKeySecretName,
+				Optional:   &optional,
+			},
+		},
+	}
+}
+
+func discoverySigningKeyVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      "aibom-discovery-signing-key",
+		MountPath: "/var/run/secrets/aibom/discovery-signing",
+		ReadOnly:  true,
+	}
+}
+
+// buildDatasetSigningKeyVolume mirrors buildDiscoverySigningKeyVolume for
+// the separate dataset-signing key (see aibomdata.DatasetSigningKeySecretName
+// for why it's a distinct Secret from the discovery one). Mounted only into
+// the aibom-dataset-sidecar container -- never the app container, and never
+// the discovery init container either. Optional for the same reason as the
+// discovery key: a namespace whose chart install predates this key's
+// addition to signing.yaml simply has no such Secret, and
+// dataset_sidecar.py falls back to publishing unsigned dataset data rather
+// than the sidecar failing to start.
+func buildDatasetSigningKeyVolume() corev1.Volume {
+	optional := true
+	return corev1.Volume{
+		Name: "aibom-dataset-signing-key",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: aibomdata.DatasetSigningKeySecretName,
+				Optional:   &optional,
+			},
+		},
+	}
+}
+
+func datasetSigningKeyVolumeMount() corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      "aibom-dataset-signing-key",
+		MountPath: "/var/run/secrets/aibom/dataset-signing",
+		ReadOnly:  true,
+	}
+}
+
+const (
+	modelSourceVolumeName = "aibom-model-source"
+	modelSourceMountPath  = "/mnt/aibom-model"
+)
+
+// modelSourcePVC returns the claim name and in-claim subpath of a KServe
+// predictor's pvc://<claim>/<path> storageUri. It reads KServe's own source
+// annotation rather than the pod's volumes: this webhook runs before KServe's
+// pod mutator, which is what adds the /mnt/models mount. Only pods KServe has
+// labeled as a predictor qualify, and the mount is read-only in the pod's own
+// namespace, so this grants nothing the requester couldn't already mount.
+func modelSourcePVC(pod *corev1.Pod) (claim, subPath string, ok bool) {
+	if pod.Labels[aibomdata.LabelKServeInferenceService] == "" {
+		return "", "", false
+	}
+	uri := pod.Annotations[aibomdata.AnnotationKServeStorageSourceURI]
+	rest, found := strings.CutPrefix(uri, "pvc://")
+	if !found {
+		return "", "", false
+	}
+	claim, subPath, _ = strings.Cut(rest, "/")
+	subPath = strings.Trim(subPath, "/")
+	if claim == "" {
+		return "", "", false
+	}
+	for _, seg := range strings.Split(subPath, "/") {
+		if seg == ".." {
+			return "", "", false
+		}
+	}
+	return claim, subPath, true
+}
+
+func buildModelSourceVolume(claim string) corev1.Volume {
+	return corev1.Volume{
+		Name: modelSourceVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: claim,
+				ReadOnly:  true,
+			},
+		},
+	}
+}
+
+func modelSourceVolumeMount(subPath string) corev1.VolumeMount {
+	return corev1.VolumeMount{
+		Name:      modelSourceVolumeName,
+		MountPath: modelSourceMountPath,
+		SubPath:   subPath,
+		ReadOnly:  true,
+	}
+}
+
+// volumeMountIndexAtPath returns the index of the volumeMount in mounts
+// whose MountPath matches path, or -1 if none does.
+func volumeMountIndexAtPath(mounts []corev1.VolumeMount, path string) int {
+	for i, m := range mounts {
+		if m.MountPath == path {
+			return i
+		}
+	}
+	return -1
+}
+
+// appendVolume adds a volume patch, handling nil vs existing volumes array.
+// It tracks the running count so subsequent appends use the correct operation.
+func appendVolume(patches []PatchOperation, pod *corev1.Pod, vol corev1.Volume) []PatchOperation {
+	existingCount := len(pod.Spec.Volumes)
+	// Count how many volume patches we've already added
+	for _, p := range patches {
+		if p.Path == "/spec/volumes" || p.Path == "/spec/volumes/-" {
+			existingCount++
+		}
+	}
+
+	if existingCount == 0 {
+		return append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/volumes",
+			Value: []corev1.Volume{vol},
+		})
+	}
+	return append(patches, PatchOperation{
+		Op:    "add",
+		Path:  "/spec/volumes/-",
+		Value: vol,
+	})
+}
+
+// appendInitContainer adds an initContainer patch, handling nil vs existing
+// initContainers array, and tracking the running count the same way
+// appendVolume does -- needed since Mutate can now add more than one init
+// container in a single call (the discovery init container, and, when
+// dataset detection is enabled, the dataset sidecar -- see #47).
+func appendInitContainer(patches []PatchOperation, pod *corev1.Pod, c corev1.Container) []PatchOperation {
+	existingCount := len(pod.Spec.InitContainers)
+	for _, p := range patches {
+		if p.Path == "/spec/initContainers" || p.Path == "/spec/initContainers/-" {
+			existingCount++
+		}
+	}
+
+	if existingCount == 0 {
+		return append(patches, PatchOperation{
+			Op:    "add",
+			Path:  "/spec/initContainers",
+			Value: []corev1.Container{c},
+		})
+	}
+	return append(patches, PatchOperation{
+		Op:    "add",
+		Path:  "/spec/initContainers/-",
+		Value: c,
+	})
+}

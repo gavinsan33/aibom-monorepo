@@ -1,0 +1,89 @@
+# Lets the aibom-postprocess Job query Prometheus/Thanos Querier directly
+# (see postprocess.py) instead of going through Grafana. Mirrors
+# gpu-quota-operator's manager/deploy/service-ca-configmap.yaml and
+# manager/bootstrap/monitoring_rolebinding.yaml.
+#
+# The service-ca operator injects the cluster's service-serving CA bundle into
+# any ConfigMap annotated like this (populating a "service-ca.crt" key).
+# watcher.go mounts this into the postprocess Job as optional: on a cluster
+# with no service-ca operator (e.g. a plain-HTTP dev Prometheus), the mount
+# resolves to an empty directory and postprocess.py falls back to the system
+# trust store instead of erroring.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aibom-service-ca
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+{{- if .Values.monitoringAccess.enabled }}
+---
+# Grants read access to OpenShift's built-in Prometheus/Thanos Querier.
+# cluster-monitoring-view is a ClusterRole shipped by OpenShift's cluster
+# monitoring operator, not something this chart defines. Bound to the specific
+# aibom-postprocess ServiceAccount (not the whole namespace's SA group, unlike
+# the other RoleBindings in rbac.yaml) since read access to cluster-wide
+# platform metrics is broader than what any other workload in this namespace
+# needs.
+#
+# Unlike everything else in this chart, a ClusterRoleBinding requires
+# cluster-scoped create/patch permission — the same requirement
+# charts/aibom-webhook's build.yaml/CRD install has, and the same fix: set
+# monitoringAccess.enabled=false (values.yaml) if your account doesn't have
+# it, and have a cluster-admin apply this file directly once instead. Without
+# it, telemetry collection just stays disabled for this namespace (postprocess.py
+# still runs — see PROMETHEUS_URL gating in main()) rather than the Job failing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aibom-postprocess-monitoring-view-{{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: aibom-postprocess
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.vllmMetrics.enabled }}
+---
+# Tells OpenShift's user-workload-monitoring Prometheus to scrape vLLM's own
+# /metrics endpoint (TTFT, ITL, queue depth, KV-cache usage -- see CLAUDE.md's
+# Inference Performance Telemetry section) on every instrumented pod in this
+# namespace, so postprocess.py's vLLM queries have something to read from
+# Thanos Querier in the first place. Without this, vLLM's metrics are only
+# ever visible in-process on the pod's own :8000/metrics -- nothing scrapes
+# them into Prometheus at all, the same way DCGM_FI_DEV_GPU_UTIL wouldn't
+# exist in Prometheus without nvidia-gpu-operator's own ServiceMonitor.
+#
+# A PodMonitor, not a ServiceMonitor: KServe's predictor Service only
+# exposes port 80, not the vLLM container's own serving port, so scraping
+# via the Service wouldn't reach it. A PodMonitor scrapes pod IPs directly.
+#
+# Selector is the same aibom.io/instrumented=true label the webhook already
+# stamps on every qualifying pod (mutator.go) -- not a vLLM-specific label,
+# since telling "is this actually vLLM" apart from any other instrumented
+# workload at admission time would require duplicating postprocess.py's own
+# CLI-detection logic in the Go mutator. Port 8000 is vLLM's own upstream
+# default (`vllm serve`'s --port), not just this project's example
+# convention, so scrape targets that aren't vLLM either don't listen on that
+# port at all (scrape just fails, harmless) or coincidentally do and expose
+# unrelated Prometheus-format metrics -- low-probability, and even then
+# postprocess.py's vllm: metrics never match anything else. A workload that
+# runs vLLM on a non-default --port isn't scraped; there's no per-workload
+# override for this yet (see #86).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: aibom-vllm-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      aibom.io/instrumented: "true"
+  podMetricsEndpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 30s
+{{- end }}

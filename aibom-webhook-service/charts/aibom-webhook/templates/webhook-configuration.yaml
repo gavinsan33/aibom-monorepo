@@ -1,0 +1,62 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: aibom-webhook
+  annotations:
+    # cert-manager's cainjector controller watches for this annotation and
+    # keeps clientConfig.caBundle (below) populated and in sync with
+    # templates/certificates.yaml's Certificate automatically, including on renewal.
+    cert-manager.io/inject-ca-from: {{ include "aibom-webhook.namespace" . }}/aibom-webhook-certs
+webhooks:
+  - name: {{ include "aibom-webhook.serviceDNSName" . }}
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    reinvocationPolicy: {{ .Values.webhook.reinvocationPolicy }}
+    namespaceSelector:
+      matchLabels:
+        {{ .Values.webhook.namespaceSelectorLabel.key }}: {{ .Values.webhook.namespaceSelectorLabel.value | quote }}
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+      # Job create/update is also intercepted so aibom.io/postprocess-for can
+      # be checked against the requester's identity -- see
+      # SanitizeJobPostprocessLabel's doc comment for why this can't be
+      # verified from the Pod alone, and why UPDATE has to be covered too
+      # (a Job created without the label, then patched to add it afterward,
+      # would otherwise bypass a CREATE-only check entirely). Same
+      # clientConfig/failurePolicy/namespaceSelector as the pods rule above.
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+        scope: Namespaced
+      # ConfigMap create/update is also intercepted so
+      # aibom-compiled-signing-public-key -- the cluster-side anchor
+      # oc-aibom cross-checks a compiled AIBOM's embedded signing key
+      # against, see CLAUDE.md's Compiled AIBOM Signing -- can only ever be
+      # written by the aibom-postprocess ServiceAccount that's actually
+      # supposed to publish it. Without this, rbac.yaml's broad
+      # aibom-workload-data Role (bound to every ServiceAccount in the
+      # namespace) would let any workload pod overwrite it with a forged
+      # key. See ValidateSigningPublicKeyConfigMap's doc comment -- this is
+      # the one rule in this webhook that can actually deny a request,
+      # rather than just patch it.
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["configmaps"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: aibom-webhook
+        namespace: {{ include "aibom-webhook.namespace" . }}
+        path: /mutate
+        port: 443
+      # caBundle is deliberately omitted: it's populated by cert-manager's cainjector
+      # (see the cert-manager.io/inject-ca-from annotation above). If this template set
+      # caBundle itself, Helm's server-side apply and cainjector's own apply would both
+      # try to own the field, causing an SSA conflict on every install/upgrade.

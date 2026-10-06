@@ -1,0 +1,217 @@
+# RHOAI/KServe variant of vllm-inference.yaml.
+#
+# This deploys the same model via a KServe InferenceService (the route
+# Red Hat OpenShift AI's Model Serving UI uses) instead of a raw JobSet,
+# using a fully custom predictor container so vLLM pulls the model directly
+# from Hugging Face Hub — no dependency on a pre-provisioned S3/PVC model
+# store in this namespace. A plain batch/v1 Job runs the same guidellm
+# benchmark against the predictor's Service as the client in
+# vllm-inference.yaml — it just waits on the predictor's /health endpoint
+# itself, since a standalone Job has no JobSet dependsOn to order on.
+#
+# The discovery init container and dataset detector get injected into the
+# predictor pod via the webhook's requestsGPU fallback, since the pod is
+# owned by a ReplicaSet, not a Job/JobSet/PyTorchJob/RayJob. Postprocessing
+# is handled by the watcher's pod-level finalizer path (aibom.io/log-extraction-pod):
+# since the predictor pod never "completes", the watcher holds it open on
+# deletion (rollout, scale-down, or a manual `oc delete pod`), extracts its
+# discovery/dataset logs and aibom.io/* annotations (propagated onto the pod
+# by KServe from spec.predictor.annotations), and creates a postprocess Job
+# from that single pod — see README. The client Job below still won't
+# qualify for postprocessing on its own (no GPU resources or aibom.io
+# annotations, and it isn't part of a JobSet to inherit any) — it just
+# exercises the predictor endpoint.
+#
+# The InferenceService has no built-in lifecycle: it's a Deployment-managed
+# predictor pod, not a Job, so nothing tears down the GPU-holding predictor
+# on its own. Rather than a separate timer-based cleanup Job, the client Job
+# itself deletes the InferenceService as its last step, once the benchmark
+# has actually finished (not after a fixed guessed delay) — the client's own
+# ServiceAccount is scoped via RBAC to delete only this InferenceService.
+# The benchmark runs as an init container specifically so it's guaranteed to
+# finish before the delete step (a pod's main containers all start
+# concurrently, so ordering the delete after the benchmark requires the
+# benchmark to be an init container rather than a sibling main container).
+#
+# The delete step also removes its own ServiceAccount/Role/RoleBinding once
+# it's done, so nothing outlives the Job it was created for. Order matters:
+# the InferenceService is deleted first (while the RoleBinding is still in
+# place to authorize it), then the RoleBinding, then the Role, then the
+# ServiceAccount itself last — deleting the RoleBinding any earlier would
+# revoke the token's own authorization before the later delete calls run.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: aibom-vllm-granite-rhoai
+  namespace: project-gavin-test
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment
+spec:
+  predictor:
+    minReplicas: 1
+    maxReplicas: 1
+    annotations:
+      aibom.io/experiment-intent: inference
+      aibom.io/experiment-name: vllm-granite-rhoai-benchmark
+
+    tolerations:
+      - operator: Exists
+    containers:
+      - name: kserve-container
+        image: nvcr.io/nvidia/vllm:26.03-py3
+        command:
+          - python
+          - -m
+          - vllm.entrypoints.openai.api_server
+        args:
+          - --model=drawais/Granite-3.3-8B-Instruct-AWQ-INT4
+          - --port=8000
+          - --max-model-len=10000
+          - --gpu-memory-utilization=0.6
+          - '--override-generation-config={"temperature": 0.7, "top_p": 0.9, "top_k": 20}'
+          - '--speculative-config={"method": "ngram", "num_speculative_tokens": 5, "prompt_lookup_max": 4}'
+        env:
+          - name: HOME
+            value: /tmp
+          - name: HF_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-token-secret
+                key: HF_TOKEN
+                optional: true
+        ports:
+          - containerPort: 8000
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        resources:
+          requests:
+            nvidia.com/gpu: "1"
+          limits:
+            nvidia.com/gpu: "1"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aibom-vllm-granite-rhoai-client
+  namespace: project-gavin-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aibom-vllm-granite-rhoai-client
+  namespace: project-gavin-test
+rules:
+  - apiGroups: ["serving.kserve.io"]
+    resources: ["inferenceservices"]
+    resourceNames: ["aibom-vllm-granite-rhoai"]
+    verbs: ["delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["aibom-vllm-granite-rhoai-client"]
+    verbs: ["delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    resourceNames: ["aibom-vllm-granite-rhoai-client"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aibom-vllm-granite-rhoai-client
+  namespace: project-gavin-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aibom-vllm-granite-rhoai-client
+subjects:
+  - kind: ServiceAccount
+    name: aibom-vllm-granite-rhoai-client
+    namespace: project-gavin-test
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aibom-vllm-granite-rhoai-client
+  namespace: project-gavin-test
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: aibom-vllm-granite-rhoai-client
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: wait-for-predictor
+          image: docker.io/curlimages/curl:8.11.0
+          command:
+            - sh
+            - -c
+            - |
+              until curl -sf http://aibom-vllm-granite-rhoai-predictor.project-gavin-test.svc.cluster.local:8000/health; do
+                echo "waiting for predictor..."
+                sleep 5
+              done
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+        - name: benchmark
+          image: ghcr.io/vllm-project/guidellm@sha256:e3ad2371bfa8e42f2c3d1251b62d0d9c9706c27ae2143c8c048eb5fc6aebb558
+          imagePullPolicy: Always
+          command:
+            - guidellm
+            - run
+            - --backend=kind=openai_http,target=http://aibom-vllm-granite-rhoai-predictor.project-gavin-test.svc.cluster.local:8000
+            - --data=kind=synthetic_text,prompt_tokens=256,output_tokens=128
+            - --profile=kind=sweep
+            - --constraint=kind=max_duration,seconds=30
+            - --output=kind=json
+          env:
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+      containers:
+        - name: delete-inferenceservice
+          image: docker.io/curlimages/curl:8.11.0
+          command:
+            - sh
+            - -c
+            - |
+              TOKEN=/var/run/secrets/kubernetes.io/serviceaccount/token
+              CACERT=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+              NS=project-gavin-test
+              curl -sf -X DELETE --cacert "$CACERT" \
+                -H "Authorization: Bearer $(cat $TOKEN)" \
+                "https://kubernetes.default.svc/apis/serving.kserve.io/v1beta1/namespaces/$NS/inferenceservices/aibom-vllm-granite-rhoai"
+              curl -sf -X DELETE --cacert "$CACERT" \
+                -H "Authorization: Bearer $(cat $TOKEN)" \
+                "https://kubernetes.default.svc/apis/rbac.authorization.k8s.io/v1/namespaces/$NS/rolebindings/aibom-vllm-granite-rhoai-client"
+              curl -sf -X DELETE --cacert "$CACERT" \
+                -H "Authorization: Bearer $(cat $TOKEN)" \
+                "https://kubernetes.default.svc/apis/rbac.authorization.k8s.io/v1/namespaces/$NS/roles/aibom-vllm-granite-rhoai-client"
+              curl -sf -X DELETE --cacert "$CACERT" \
+                -H "Authorization: Bearer $(cat $TOKEN)" \
+                "https://kubernetes.default.svc/api/v1/namespaces/$NS/serviceaccounts/aibom-vllm-granite-rhoai-client"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
