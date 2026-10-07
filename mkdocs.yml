@@ -1,0 +1,74 @@
+# Combined documentation site for the AIBOM projects.
+#
+# Each project keeps its own docs/ and mkdocs.yml in its source repo; the sync
+# in this repo mirrors them into the folders below and mkdocs-monorepo-plugin
+# stitches them into one site. Edit docs in the source repos, never under the
+# project folders here. Theme, extensions and styling for the whole site live
+# in this file and docs/stylesheets/.
+site_name: Project AIBOM
+site_url: https://gavinsan33.github.io/project-aibom/
+repo_url: https://github.com/gavinsan33/project-aibom
+repo_name: gavinsan33/project-aibom
+
+theme:
+  name: material
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    logo: material/shield-check-outline
+    repo: fontawesome/brands/github
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.instant
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/extra.css
+
+exclude_docs: requirements.txt
+
+plugins:
+  - search
+  - monorepo
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  # Pull files in from a project instead of copying them, e.g.
+  #   --8<-- "aibom-webhook-service/examples/vllm-inference.yaml"
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Webhook: '!include ./aibom-webhook-service/mkdocs.yml'
+  - CLI: '!include ./oc-aibom/mkdocs.yml'
+  - Console Plugin: '!include ./aibom-console-plugin/mkdocs.yml'
