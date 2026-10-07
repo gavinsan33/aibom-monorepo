@@ -13,6 +13,9 @@ plugin:
     # AIBOM) on the AIBOM Detail and Compare views. Rendered into the
     # plugin's served feature-flags.json; no RBAC is involved.
     telemetryTab: true
+    # Show the CSV "Download" menu on the AIBOM List and Detail views.
+    # Disabled by default; the data is still readable in the UI.
+    csvExport: false
   securityContext:
     enabled: true
   podSecurityContext:

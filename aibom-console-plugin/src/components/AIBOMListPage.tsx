@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
@@ -32,6 +32,7 @@ import {
 } from '../utils/listUrlState';
 import { sortItems } from '../utils/sort';
 import { aibomKey } from '../utils/exportSummary';
+import { getPluginFeatureFlags } from '../utils/pluginFeatureFlags';
 import AIBOMDownloadMenu from './AIBOMDownloadMenu';
 import AIBOMFilterToolbar from './AIBOMFilterToolbar';
 import AIBOMListTable from './AIBOMListTable';
@@ -41,6 +42,12 @@ const AIBOM_GVK = { group: 'aibom.io', version: 'v1alpha1', kind: 'AIBOM' };
 const AIBOMListPage: FC = () => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
   const navigate = useNavigate();
+  const [csvEnabled, setCsvEnabled] = useState(false);
+  useEffect(() => {
+    void getPluginFeatureFlags().then((flags) => {
+      setCsvEnabled(flags.csvExport);
+    });
+  }, []);
   const [activeNamespace] = useActiveNamespace();
   // Filter/sort live in the URL (not component state) so they survive
   // navigating to a detail page and back.
@@ -138,9 +145,11 @@ const AIBOMListPage: FC = () => {
                     {t('Compare')}
                   </Button>
                 </FlexItem>
-                <FlexItem>
-                  <AIBOMDownloadMenu items={selectedItems} />
-                </FlexItem>
+                {csvEnabled && (
+                  <FlexItem>
+                    <AIBOMDownloadMenu items={selectedItems} />
+                  </FlexItem>
+                )}
                 <FlexItem>
                   <Button
                     variant="link"

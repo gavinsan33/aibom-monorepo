@@ -44,12 +44,14 @@ const AIBOMDetailPage: FC = () => {
   const { namespace, name } = useParams<{ namespace: string; name: string }>();
   const [activeTab, setActiveTab] = useState<string | number>('overview');
   const [telemetryEnabled, setTelemetryEnabled] = useState(false);
+  const [csvEnabled, setCsvEnabled] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     void getPluginFeatureFlags().then((flags) => {
       if (!cancelled) {
         setTelemetryEnabled(flags.telemetryTab);
+        setCsvEnabled(flags.csvExport);
       }
     });
     return () => {
@@ -82,11 +84,13 @@ const AIBOMDetailPage: FC = () => {
           </Bullseye>
         ) : (
           <>
-            <Flex justifyContent={{ default: 'justifyContentFlexEnd' }}>
-              <FlexItem>
-                <AIBOMDownloadMenu items={[item]} />
-              </FlexItem>
-            </Flex>
+            {csvEnabled && (
+              <Flex justifyContent={{ default: 'justifyContentFlexEnd' }}>
+                <FlexItem>
+                  <AIBOMDownloadMenu items={[item]} />
+                </FlexItem>
+              </Flex>
+            )}
             <Tabs
               // Don't mount the Telemetry tab (it fetches and verifies the stored series
               // object) until it's opened; PF renders every tab eagerly otherwise.
