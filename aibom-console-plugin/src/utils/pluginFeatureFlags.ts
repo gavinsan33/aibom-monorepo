@@ -1,8 +1,9 @@
 export interface PluginFeatureFlags {
   telemetryTab: boolean;
+  csvExport: boolean;
 }
 
-const DEFAULT_FLAGS: PluginFeatureFlags = { telemetryTab: true };
+const DEFAULT_FLAGS: PluginFeatureFlags = { telemetryTab: true, csvExport: false };
 
 // The console serves plugin static assets same-origin under
 // /api/plugins/<name>/ (the same prefix webpack's publicPath uses for
