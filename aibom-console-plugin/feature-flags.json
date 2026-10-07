@@ -1,3 +1,4 @@
 {
-  "telemetryTab": true
+  "telemetryTab": true,
+  "csvExport": false
 }
