@@ -26,7 +26,7 @@ describe('getPluginFeatureFlags', () => {
     fetchMock.mockResolvedValue(jsonResponse(true, { telemetryTab: false }));
     const { getPluginFeatureFlags } = loadModule();
 
-    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: false });
+    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: false, csvExport: false });
     expect(fetchMock).toHaveBeenCalledWith('/api/plugins/aibom-console-plugin/feature-flags.json');
   });
 
@@ -34,21 +34,21 @@ describe('getPluginFeatureFlags', () => {
     fetchMock.mockResolvedValue(jsonResponse(true, {}));
     const { getPluginFeatureFlags } = loadModule();
 
-    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true });
+    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true, csvExport: false });
   });
 
   it('falls back to defaults when the fetch is not ok', async () => {
     fetchMock.mockResolvedValue(jsonResponse(false));
     const { getPluginFeatureFlags } = loadModule();
 
-    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true });
+    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true, csvExport: false });
   });
 
   it('falls back to defaults when the fetch rejects', async () => {
     fetchMock.mockRejectedValue(new Error('network error'));
     const { getPluginFeatureFlags } = loadModule();
 
-    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true });
+    await expect(getPluginFeatureFlags()).resolves.toEqual({ telemetryTab: true, csvExport: false });
   });
 
   it('caches the request across calls', async () => {
