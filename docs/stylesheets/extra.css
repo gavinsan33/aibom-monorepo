@@ -6,6 +6,10 @@
   letter-spacing: -0.02em;
 }
 
+[data-md-color-scheme="default"] .md-typeset h1 {
+  color: var(--md-primary-fg-color);
+}
+
 .md-typeset h2 {
   font-weight: 600;
   margin-top: 2.2em;
@@ -186,8 +190,8 @@
 
 .md-header__button.md-logo img,
 .md-header__button.md-logo svg {
-  height: 1.7rem;
-  width: 1.7rem;
+  height: 2.4rem;
+  width: 2.4rem;
 }
 
 /* GitHub link in the top right */
