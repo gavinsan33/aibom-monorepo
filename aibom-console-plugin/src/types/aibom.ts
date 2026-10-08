@@ -102,6 +102,13 @@ export interface AIBOMData {
     top_p?: number | string;
     top_k?: number | string;
     max_tokens?: number | string;
+    served_model_name?: string;
+    max_num_seqs?: number | string;
+    seed?: number | string;
+    port?: number | string;
+    trust_remote_code?: boolean;
+    enforce_eager?: boolean;
+    enable_prefix_caching?: boolean;
     performance?: {
       collected_at?: string;
       summary_includes_cold_start?: boolean;
@@ -119,6 +126,13 @@ export interface AIBOMData {
     driver_version?: string;
     framework_version?: string;
     kernel_version?: string;
+    gpu_memory_mb?: (number | string)[];
+    cpu?: Record<string, unknown>;
+    network?: Record<string, unknown>;
+    storage?: Record<string, unknown>;
+    kernel_config?: Record<string, unknown>;
+    process_limits?: Record<string, unknown>;
+    benchmarks?: Record<string, unknown>;
   };
   resource_utilization?: {
     collected_at?: string;
