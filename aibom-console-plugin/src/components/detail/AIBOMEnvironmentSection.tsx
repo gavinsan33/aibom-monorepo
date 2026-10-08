@@ -4,20 +4,12 @@ import { DescriptionList } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { formatFlexNumber, toFlexNumber } from '../../utils/flexible';
 import Field from './Field';
+import AIBOMHardwareDetails from './AIBOMHardwareDetails';
 import Section from './Section';
 
 interface AIBOMEnvironmentSectionProps {
   environment: AIBOMData['environment'];
 }
-
-/** Sorted `key=value` pairs; nested values (benchmarks) render as JSON. */
-const formatRecord = (rec?: Record<string, unknown>): string | undefined =>
-  rec && Object.keys(rec).length > 0
-    ? Object.keys(rec)
-        .sort()
-        .map((k) => `${k}=${typeof rec[k] === 'string' ? rec[k] : JSON.stringify(rec[k])}`)
-        .join(' ')
-    : undefined;
 
 const AIBOMEnvironmentSection: FC<AIBOMEnvironmentSectionProps> = ({ environment }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
@@ -43,14 +35,8 @@ const AIBOMEnvironmentSection: FC<AIBOMEnvironmentSectionProps> = ({ environment
         <Field label={t('Driver version')}>{environment.driver_version}</Field>
         <Field label={t('Framework version')}>{environment.framework_version}</Field>
         <Field label={t('Kernel version')}>{environment.kernel_version}</Field>
-        <Field label={t('GPU memory (MiB)')}>{environment.gpu_memory_mb?.join(', ')}</Field>
-        <Field label={t('CPU details')}>{formatRecord(environment.cpu)}</Field>
-        <Field label={t('Network')}>{formatRecord(environment.network)}</Field>
-        <Field label={t('Storage')}>{formatRecord(environment.storage)}</Field>
-        <Field label={t('Kernel config')}>{formatRecord(environment.kernel_config)}</Field>
-        <Field label={t('Process limits')}>{formatRecord(environment.process_limits)}</Field>
-        <Field label={t('Benchmarks')}>{formatRecord(environment.benchmarks)}</Field>
       </DescriptionList>
+      <AIBOMHardwareDetails environment={environment} />
     </Section>
   );
 };
