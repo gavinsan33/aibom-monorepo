@@ -44,6 +44,23 @@ const AIBOMInferenceSection: FC<AIBOMInferenceSectionProps> = ({ inference }) =>
               )}`}
             </Field>
             <Field label={t('Max tokens')}>{formatFlexNumber(inference.max_tokens)}</Field>
+            <Field label={t('Served model name')}>{inference.served_model_name}</Field>
+            <Field label={t('Max num seqs')}>{formatFlexNumber(inference.max_num_seqs)}</Field>
+            <Field label={t('Seed')}>{formatFlexNumber(inference.seed)}</Field>
+            <Field label={t('Port')}>{formatFlexNumber(inference.port)}</Field>
+            <Field label={t('Trust remote code')}>
+              {inference.trust_remote_code === undefined
+                ? undefined
+                : String(inference.trust_remote_code)}
+            </Field>
+            <Field label={t('Enforce eager')}>
+              {inference.enforce_eager === undefined ? undefined : String(inference.enforce_eager)}
+            </Field>
+            <Field label={t('Prefix caching')}>
+              {inference.enable_prefix_caching === undefined
+                ? undefined
+                : String(inference.enable_prefix_caching)}
+            </Field>
           </DescriptionList>
         </StackItem>
         {hasPerformance && (
