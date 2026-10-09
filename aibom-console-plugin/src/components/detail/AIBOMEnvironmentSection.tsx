@@ -17,7 +17,7 @@ const AIBOMEnvironmentSection: FC<AIBOMEnvironmentSectionProps> = ({ environment
   const memoryGb = toFlexNumber(environment.memory_gb);
 
   return (
-    <Section title={t('Environment')} md={6}>
+    <Section title={t('Environment')}>
       <DescriptionList isHorizontal isCompact columnModifier={{ default: '1Col', md: '2Col' }}>
         <Field label={t('GPU')}>
           {environment.gpu_type &&
