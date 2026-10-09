@@ -1,13 +1,6 @@
-import { useState } from 'react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  DescriptionList,
-  Divider,
-  ExpandableSection,
-  Stack,
-  StackItem,
-} from '@patternfly/react-core';
+import { DescriptionList, Divider, Stack, StackItem } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { INFERENCE_METRIC_LABELS, INFERENCE_METRIC_ORDER } from '../../types/aibom';
 import { formatFlexNumber } from '../../utils/flexible';
@@ -21,17 +14,7 @@ interface AIBOMInferenceSectionProps {
 
 const AIBOMInferenceSection: FC<AIBOMInferenceSectionProps> = ({ inference }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
-  const [flagsExpanded, setFlagsExpanded] = useState(false);
   if (!inference) return null;
-  const hasServerFlags = [
-    inference.served_model_name,
-    inference.max_num_seqs,
-    inference.seed,
-    inference.port,
-    inference.trust_remote_code,
-    inference.enforce_eager,
-    inference.enable_prefix_caching,
-  ].some((v) => v !== undefined);
   const performanceMetrics = inference.performance?.metrics;
   const hasPerformance = performanceMetrics && Object.keys(performanceMetrics).length > 0;
 
@@ -61,45 +44,24 @@ const AIBOMInferenceSection: FC<AIBOMInferenceSectionProps> = ({ inference }) =>
               )}`}
             </Field>
             <Field label={t('Max tokens')}>{formatFlexNumber(inference.max_tokens)}</Field>
+            <Field label={t('Served model name')}>{inference.served_model_name}</Field>
+            <Field label={t('Max num seqs')}>{formatFlexNumber(inference.max_num_seqs)}</Field>
+            <Field label={t('Seed')}>{formatFlexNumber(inference.seed)}</Field>
+            <Field label={t('Trust remote code')}>
+              {inference.trust_remote_code === undefined
+                ? undefined
+                : String(inference.trust_remote_code)}
+            </Field>
+            <Field label={t('Enforce eager')}>
+              {inference.enforce_eager === undefined ? undefined : String(inference.enforce_eager)}
+            </Field>
+            <Field label={t('Prefix caching')}>
+              {inference.enable_prefix_caching === undefined
+                ? undefined
+                : String(inference.enable_prefix_caching)}
+            </Field>
           </DescriptionList>
         </StackItem>
-        {hasServerFlags && (
-          <StackItem>
-            <ExpandableSection
-              toggleText={flagsExpanded ? t('Hide server flags') : t('Show server flags')}
-              isExpanded={flagsExpanded}
-              onToggle={(_event, isExpanded) => {
-                setFlagsExpanded(isExpanded);
-              }}
-            >
-              <DescriptionList
-                isHorizontal
-                isCompact
-                columnModifier={{ default: '1Col', md: '2Col' }}
-              >
-                <Field label={t('Served model name')}>{inference.served_model_name}</Field>
-                <Field label={t('Max num seqs')}>{formatFlexNumber(inference.max_num_seqs)}</Field>
-                <Field label={t('Seed')}>{formatFlexNumber(inference.seed)}</Field>
-                <Field label={t('Port')}>{formatFlexNumber(inference.port)}</Field>
-                <Field label={t('Trust remote code')}>
-                  {inference.trust_remote_code === undefined
-                    ? undefined
-                    : String(inference.trust_remote_code)}
-                </Field>
-                <Field label={t('Enforce eager')}>
-                  {inference.enforce_eager === undefined
-                    ? undefined
-                    : String(inference.enforce_eager)}
-                </Field>
-                <Field label={t('Prefix caching')}>
-                  {inference.enable_prefix_caching === undefined
-                    ? undefined
-                    : String(inference.enable_prefix_caching)}
-                </Field>
-              </DescriptionList>
-            </ExpandableSection>
-          </StackItem>
-        )}
         {hasPerformance && (
           <>
             <StackItem>
