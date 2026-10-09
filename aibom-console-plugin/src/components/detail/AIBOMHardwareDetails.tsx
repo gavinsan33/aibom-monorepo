@@ -1,15 +1,6 @@
-import { useState } from 'react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  DescriptionList,
-  ExpandableSection,
-  Grid,
-  GridItem,
-  Stack,
-  StackItem,
-  Title,
-} from '@patternfly/react-core';
+import { DescriptionList, Grid, GridItem, Stack, StackItem, Title } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { toFlexNumber } from '../../utils/flexible';
 import Field from './Field';
@@ -39,10 +30,9 @@ const formatGpuMemory = (mb: (number | string)[]): string | undefined => {
 const hasEntries = (rec?: Record<string, unknown>): rec is Record<string, unknown> =>
   !!rec && Object.keys(rec).length > 0;
 
-/** Collapsed-by-default breakdown of the extra discovery data: one titled block per group. */
+/** Breakdown of the extra discovery data: one titled block per group. */
 const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
-  const [expanded, setExpanded] = useState(false);
 
   const groups: { title: string; data?: Record<string, unknown>; fields: [string, string][] }[] = [
     {
@@ -89,13 +79,7 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
   if (visibleGroups.length === 0) return null;
 
   return (
-    <ExpandableSection
-      toggleText={expanded ? t('Hide hardware details') : t('Show hardware details')}
-      isExpanded={expanded}
-      onToggle={(_event, isExpanded) => {
-        setExpanded(isExpanded);
-      }}
-    >
+    <>
       <Stack hasGutter>
         {visibleGroups.length > 0 && (
           <StackItem>
@@ -122,7 +106,7 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
           </StackItem>
         )}
       </Stack>
-    </ExpandableSection>
+    </>
   );
 };
 

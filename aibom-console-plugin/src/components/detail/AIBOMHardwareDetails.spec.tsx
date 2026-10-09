@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import AIBOMHardwareDetails from './AIBOMHardwareDetails';
 
 const environment = {
@@ -13,12 +13,8 @@ describe('AIBOMHardwareDetails', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('is collapsed until toggled, then shows formatted groups', () => {
+  it('shows the formatted groups', () => {
     render(<AIBOMHardwareDetails environment={environment} />);
-    expect(screen.queryByText('x86_64')).not.toBeVisible();
-
-    fireEvent.click(screen.getByText('Show hardware details'));
-
     expect(screen.getByText('2 × 80 GiB')).toBeVisible();
     expect(screen.getByText('x86_64')).toBeVisible();
     expect(screen.getByText('nvme0n1 894G, sda 1T')).toBeVisible();
