@@ -1,14 +1,6 @@
-import { useState } from 'react';
 import type { FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  DescriptionList,
-  ExpandableSection,
-  Stack,
-  StackItem,
-  Title,
-} from '@patternfly/react-core';
-import { Table, Tbody, Td, Th, Thead, Tr } from '@patternfly/react-table';
+import { DescriptionList, Grid, GridItem, Stack, StackItem, Title } from '@patternfly/react-core';
 import type { AIBOMData } from '../../types/aibom';
 import { toFlexNumber } from '../../utils/flexible';
 import Field from './Field';
@@ -18,11 +10,6 @@ type Environment = NonNullable<AIBOMData['environment']>;
 interface AIBOMHardwareDetailsProps {
   environment: Environment;
 }
-
-const humanize = (key: string): string => {
-  const s = key.replace(/_/g, ' ');
-  return s.charAt(0).toUpperCase() + s.slice(1);
-};
 
 /** Discovery values are shell output; multi-line ones (lsblk) read better comma-separated. */
 const formatValue = (value: unknown): string =>
@@ -43,12 +30,16 @@ const formatGpuMemory = (mb: (number | string)[]): string | undefined => {
 const hasEntries = (rec?: Record<string, unknown>): rec is Record<string, unknown> =>
   !!rec && Object.keys(rec).length > 0;
 
-/** Collapsed-by-default breakdown of the extra discovery data: one titled block per group, and the benchmarks as a table. */
+/** Breakdown of the extra discovery data: one titled block per group. */
 const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) => {
   const { t } = useTranslation('plugin__aibom-console-plugin');
-  const [expanded, setExpanded] = useState(false);
 
   const groups: { title: string; data?: Record<string, unknown>; fields: [string, string][] }[] = [
+    {
+      title: t('GPU'),
+      data: environment.gpu_memory_mb && { gpu_memory: formatGpuMemory(environment.gpu_memory_mb) },
+      fields: [['gpu_memory', t('GPU memory')]],
+    },
     {
       title: t('CPU'),
       data: environment.cpu,
@@ -56,11 +47,6 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
         ['cpu_architecture', t('Architecture')],
         ['cpu_cores_per_socket', t('Cores per socket')],
         ['cpu_threads_per_core', t('Threads per core')],
-        ['cpu_min_freq_mhz', t('Min clock (MHz)')],
-        ['cpu_max_freq_mhz', t('Max clock (MHz)')],
-        ['cache_l1d', t('L1d cache')],
-        ['cache_l1i', t('L1i cache')],
-        ['cache_l2', t('L2 cache')],
         ['cache_l3', t('L3 cache')],
       ],
     },
@@ -68,23 +54,14 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
       title: t('Network'),
       data: environment.network,
       fields: [
-        ['interface_names', t('Interfaces')],
         ['primary_mtu', t('Primary MTU')],
         ['rdma_devices', t('RDMA devices')],
-        ['rdma_device_count', t('RDMA device count')],
-        ['tcp_congestion_control', t('TCP congestion control')],
-        ['tcp_rmem', t('TCP read buffers')],
-        ['tcp_wmem', t('TCP write buffers')],
       ],
     },
     {
       title: t('Storage'),
       data: environment.storage,
-      fields: [
-        ['block_devices', t('Block devices')],
-        ['tmpfs_size', t('/tmp size')],
-        ['tmpfs_avail', t('/tmp available')],
-      ],
+      fields: [['block_devices', t('Block devices')]],
     },
     {
       title: t('Kernel config'),
@@ -93,96 +70,43 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
         ['cpu_governor', t('CPU governor')],
         ['numa_balancing', t('NUMA balancing')],
         ['transparent_hugepages', t('Transparent hugepages')],
-        ['swappiness', t('Swappiness')],
-        ['dirty_ratio', t('Dirty ratio')],
-        ['dirty_background_ratio', t('Dirty background ratio')],
         ['max_map_count', t('Max map count')],
-        ['file_max', t('Max open files (system)')],
-      ],
-    },
-    {
-      title: t('Process limits'),
-      data: environment.process_limits,
-      fields: [
-        ['max_user_processes', t('Max user processes')],
-        ['max_open_files', t('Max open files')],
-        ['max_stack_size_kb', t('Max stack size (KB)')],
-        ['max_memory_size_kb', t('Max memory size (KB)')],
       ],
     },
   ];
 
-  const gpuMemory = environment.gpu_memory_mb && formatGpuMemory(environment.gpu_memory_mb);
   const visibleGroups = groups.filter((g) => hasEntries(g.data));
-  const benchmarks = Object.entries(environment.benchmarks ?? {}).flatMap(([name, metrics]) =>
-    metrics && typeof metrics === 'object'
-      ? Object.entries(metrics as Record<string, unknown>).map(([metric, value]) => ({
-          name,
-          metric,
-          value,
-        }))
-      : [{ name, metric: '', value: metrics }],
-  );
-
-  if (!gpuMemory && visibleGroups.length === 0 && benchmarks.length === 0) return null;
+  if (visibleGroups.length === 0) return null;
 
   return (
-    <ExpandableSection
-      toggleText={expanded ? t('Hide hardware details') : t('Show hardware details')}
-      isExpanded={expanded}
-      onToggle={(_event, isExpanded) => {
-        setExpanded(isExpanded);
-      }}
-    >
+    <>
       <Stack hasGutter>
-        {gpuMemory && (
+        {visibleGroups.length > 0 && (
           <StackItem>
-            <DescriptionList isHorizontal isCompact>
-              <Field label={t('GPU memory')}>{gpuMemory}</Field>
-            </DescriptionList>
-          </StackItem>
-        )}
-        {visibleGroups.map((g) => (
-          <StackItem key={g.title}>
-            <Title headingLevel="h4" size="md">
-              {g.title}
-            </Title>
-            <DescriptionList isHorizontal isCompact>
-              {g.fields.map(([key, label]) => (
-                <Field key={key} label={label}>
-                  {g.data?.[key] === undefined ? undefined : formatValue(g.data[key])}
-                </Field>
+            <Grid hasGutter>
+              {visibleGroups.map((g) => (
+                <GridItem key={g.title} md={6}>
+                  <Title headingLevel="h4" size="md">
+                    {g.title}
+                  </Title>
+                  <DescriptionList
+                    isHorizontal
+                    isCompact
+                    horizontalTermWidthModifier={{ default: '22ch' }}
+                  >
+                    {g.fields.map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        {g.data?.[key] === undefined ? undefined : formatValue(g.data[key])}
+                      </Field>
+                    ))}
+                  </DescriptionList>
+                </GridItem>
               ))}
-            </DescriptionList>
-          </StackItem>
-        ))}
-        {benchmarks.length > 0 && (
-          <StackItem>
-            <Title headingLevel="h4" size="md">
-              {t('Benchmarks')}
-            </Title>
-            <Table aria-label={t('Benchmarks')} variant="compact">
-              <Thead>
-                <Tr>
-                  <Th>{t('Benchmark')}</Th>
-                  <Th>{t('Metric')}</Th>
-                  <Th>{t('Value')}</Th>
-                </Tr>
-              </Thead>
-              <Tbody>
-                {benchmarks.map(({ name, metric, value }) => (
-                  <Tr key={`${name}/${metric}`}>
-                    <Td dataLabel={t('Benchmark')}>{humanize(name)}</Td>
-                    <Td dataLabel={t('Metric')}>{humanize(metric)}</Td>
-                    <Td dataLabel={t('Value')}>{formatValue(value)}</Td>
-                  </Tr>
-                ))}
-              </Tbody>
-            </Table>
+            </Grid>
           </StackItem>
         )}
       </Stack>
-    </ExpandableSection>
+    </>
   );
 };
 
