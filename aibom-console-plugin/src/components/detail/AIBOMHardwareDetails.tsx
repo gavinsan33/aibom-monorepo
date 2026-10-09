@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 import {
   DescriptionList,
   ExpandableSection,
+  Grid,
+  GridItem,
   Stack,
   StackItem,
   Title,
@@ -49,6 +51,11 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
   const [expanded, setExpanded] = useState(false);
 
   const groups: { title: string; data?: Record<string, unknown>; fields: [string, string][] }[] = [
+    {
+      title: t('GPU'),
+      data: environment.gpu_memory_mb && { gpu_memory: formatGpuMemory(environment.gpu_memory_mb) },
+      fields: [['gpu_memory', t('GPU memory')]],
+    },
     {
       title: t('CPU'),
       data: environment.cpu,
@@ -112,7 +119,6 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
     },
   ];
 
-  const gpuMemory = environment.gpu_memory_mb && formatGpuMemory(environment.gpu_memory_mb);
   const visibleGroups = groups.filter((g) => hasEntries(g.data));
   const benchmarks = Object.entries(environment.benchmarks ?? {}).flatMap(([name, metrics]) =>
     metrics && typeof metrics === 'object'
@@ -124,7 +130,7 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
       : [{ name, metric: '', value: metrics }],
   );
 
-  if (!gpuMemory && visibleGroups.length === 0 && benchmarks.length === 0) return null;
+  if (visibleGroups.length === 0 && benchmarks.length === 0) return null;
 
   return (
     <ExpandableSection
@@ -135,27 +141,30 @@ const AIBOMHardwareDetails: FC<AIBOMHardwareDetailsProps> = ({ environment }) =>
       }}
     >
       <Stack hasGutter>
-        {gpuMemory && (
+        {visibleGroups.length > 0 && (
           <StackItem>
-            <DescriptionList isHorizontal isCompact>
-              <Field label={t('GPU memory')}>{gpuMemory}</Field>
-            </DescriptionList>
+            <Grid hasGutter>
+              {visibleGroups.map((g) => (
+                <GridItem key={g.title} md={6}>
+                  <Title headingLevel="h4" size="md">
+                    {g.title}
+                  </Title>
+                  <DescriptionList
+                    isHorizontal
+                    isCompact
+                    horizontalTermWidthModifier={{ default: '22ch' }}
+                  >
+                    {g.fields.map(([key, label]) => (
+                      <Field key={key} label={label}>
+                        {g.data?.[key] === undefined ? undefined : formatValue(g.data[key])}
+                      </Field>
+                    ))}
+                  </DescriptionList>
+                </GridItem>
+              ))}
+            </Grid>
           </StackItem>
         )}
-        {visibleGroups.map((g) => (
-          <StackItem key={g.title}>
-            <Title headingLevel="h4" size="md">
-              {g.title}
-            </Title>
-            <DescriptionList isHorizontal isCompact>
-              {g.fields.map(([key, label]) => (
-                <Field key={key} label={label}>
-                  {g.data?.[key] === undefined ? undefined : formatValue(g.data[key])}
-                </Field>
-              ))}
-            </DescriptionList>
-          </StackItem>
-        ))}
         {benchmarks.length > 0 && (
           <StackItem>
             <Title headingLevel="h4" size="md">
