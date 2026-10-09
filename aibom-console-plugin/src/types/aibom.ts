@@ -105,7 +105,6 @@ export interface AIBOMData {
     served_model_name?: string;
     max_num_seqs?: number | string;
     seed?: number | string;
-    port?: number | string;
     trust_remote_code?: boolean;
     enforce_eager?: boolean;
     enable_prefix_caching?: boolean;
@@ -131,8 +130,6 @@ export interface AIBOMData {
     network?: Record<string, unknown>;
     storage?: Record<string, unknown>;
     kernel_config?: Record<string, unknown>;
-    process_limits?: Record<string, unknown>;
-    benchmarks?: Record<string, unknown>;
   };
   resource_utilization?: {
     collected_at?: string;

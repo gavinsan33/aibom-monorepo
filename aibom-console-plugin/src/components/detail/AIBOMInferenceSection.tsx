@@ -27,7 +27,6 @@ const AIBOMInferenceSection: FC<AIBOMInferenceSectionProps> = ({ inference }) =>
     inference.served_model_name,
     inference.max_num_seqs,
     inference.seed,
-    inference.port,
     inference.trust_remote_code,
     inference.enforce_eager,
     inference.enable_prefix_caching,
@@ -80,7 +79,6 @@ const AIBOMInferenceSection: FC<AIBOMInferenceSectionProps> = ({ inference }) =>
                 <Field label={t('Served model name')}>{inference.served_model_name}</Field>
                 <Field label={t('Max num seqs')}>{formatFlexNumber(inference.max_num_seqs)}</Field>
                 <Field label={t('Seed')}>{formatFlexNumber(inference.seed)}</Field>
-                <Field label={t('Port')}>{formatFlexNumber(inference.port)}</Field>
                 <Field label={t('Trust remote code')}>
                   {inference.trust_remote_code === undefined
                     ? undefined
